@@ -343,7 +343,7 @@
 
 <script>
   // ★公開前に、先生ページに表示されたGASウェブアプリURL（/execで終わるもの）へ置き換えます。
-  const DEFAULT_API_URL = 'https://script.google.com/a/macros/city.higashiosaka-osk.ed.jp/s/AKfycbz-OJ66nAeT_79QMYl6cybkNrBP7O9qzXHHrk5HcVzTvWgVUcHubhLjwaDsqJPEbE8hzg/exec';
+  const DEFAULT_API_URL = 'https://script.google.com/a/city.higashiosaka-osk.ed.jp/macros/s/AKfycbwmT9sC39S7h7LdliB51WnKUovn6M6PpC6_xOuxp_SThEcMqYzt/exec';
 
   let apiUrl = '';
   let songs = [];
@@ -422,7 +422,7 @@
 
   function normalizeApiUrl(value) {
     const url = String(value || '').trim();
-    if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec(?:\?.*)?$/i.test(url)) return '';
+    if (!/^https:\/\/script\.google\.com\/(?:a\/[^/]+\/)?macros\/s\/.+\/exec(?:\?.*)?$/i.test(url)) return '';
     return url.split('?')[0];
   }
 
