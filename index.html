@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>マイク動作チェック</title>
+  <style>
+    body{
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 0 20px;
+      color:#222;
+    }
+    h1{font-size:2rem;margin-bottom:12px}
+    p{line-height:1.7}
+    button{
+      font-size:1.1rem;
+      padding:12px 18px;
+      border:0;
+      border-radius:10px;
+      cursor:pointer;
+      margin-right:8px;
+    }
+    #startBtn{background:#2563eb;color:white}
+    #stopBtn{background:#e5e7eb;color:#111}
+    #status{
+      margin-top:18px;
+      padding:12px 14px;
+      border-radius:10px;
+      background:#f3f4f6;
+    }
+    .meter{
+      margin-top:18px;
+      height:24px;
+      background:#e5e7eb;
+      border-radius:999px;
+      overflow:hidden;
+    }
+    #bar{
+      width:0%;
+      height:100%;
+      background:#2563eb;
+      transition:width .05s linear;
+    }
+    .note{
+      margin-top:18px;
+      font-size:.95rem;
+      color:#555;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎤 マイク動作チェック</h1>
+  <p>
+    「マイクを試す」を押して、Chromeからマイク使用の確認が出たら「許可」を押してください。
+    声を出したときに青いバーが動けば成功です。
+  </p>
+
+  <button id="startBtn">マイクを試す</button>
+  <button id="stopBtn" disabled>マイクを停止</button>
+
+  <div id="status">待機中です。</div>
+
+  <div class="meter" aria-label="マイク音量">
+    <div id="bar"></div>
+  </div>
+
+  <p class="note">
+    このページは音声を録音・保存・送信しません。マイク音量をこの端末内だけで確認します。
+  </p>
+
+  <script>
+    let stream = null;
+    let audioContext = null;
+    let analyser = null;
+    let source = null;
+    let animationId = null;
+
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusEl = document.getElementById('status');
+    const bar = document.getElementById('bar');
+
+    function stopMic() {
+      if (animationId) cancelAnimationFrame(animationId);
+      animationId = null;
+
+      if (source) {
+        try { source.disconnect(); } catch (e) {}
+        source = null;
+      }
+
+      if (analyser) {
+        try { analyser.disconnect(); } catch (e) {}
+        analyser = null;
+      }
+
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+
+      if (audioContext) {
+        audioContext.close().catch(() => {});
+        audioContext = null;
+      }
+
+      bar.style.width = '0%';
+      statusEl.textContent = 'マイクを停止しました。';
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+    }
+
+    async function startMic() {
+      try {
+        statusEl.textContent = 'マイクの許可を確認しています…';
+
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false
+        });
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048;
+
+        source = audioContext.createMediaStreamSource(stream);
+        source.connect(analyser);
+
+        const data = new Uint8Array(analyser.fftSize);
+
+        function updateMeter() {
+          analyser.getByteTimeDomainData(data);
+
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) {
+            const v = (data[i] - 128) / 128;
+            sum += v * v;
+          }
+
+          const rms = Math.sqrt(sum / data.length);
+          const percent = Math.min(100, Math.max(0, rms * 350));
+          bar.style.width = percent.toFixed(1) + '%';
+
+          animationId = requestAnimationFrame(updateMeter);
+        }
+
+        statusEl.textContent = '✅ マイクを使えています。声を出してバーが動くか確認してください。';
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        updateMeter();
+
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent =
+          '❌ マイクを使えませんでした：' +
+          (err && err.message ? err.message : 'Permission denied');
+        stopMic();
+      }
+    }
+
+    startBtn.addEventListener('click', startMic);
+    stopBtn.addEventListener('click', stopMic);
+
+    window.addEventListener('beforeunload', () => {
+      if (stream) stream.getTracks().forEach(track => track.stop());
+    });
+  </script>
+</body>
+</html>
