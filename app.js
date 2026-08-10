@@ -299,21 +299,21 @@
   }
 
   async function getMicrophoneStream() {
+    // Chromebookではマイク入力が小さいことがあるため、
+    // 自動ゲインを有効にして歌声を拾いやすくします。
     try {
       return await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 1,
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: false },
+          autoGainControl: { ideal: true },
+          channelCount: { ideal: 1 },
         },
         video: false,
       });
     } catch (err) {
-      if (err && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError')) {
-        return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      }
-      throw err;
+      // 端末が細かい制約に対応していない場合は標準設定で再試行。
+      return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     }
   }
 
@@ -848,7 +848,7 @@
 
   function scheduleGuideMelody(startAt = audioContext.currentTime + .08) {
     const volumeStep = Math.max(1, Math.min(10, Number(document.getElementById('guideVolume')?.value || 4)));
-    const peakGain = 0.008 + volumeStep * 0.006;
+    const peakGain = 0.025 + volumeStep * 0.018;
     const mode = document.getElementById('guideMode')?.value || 'full';
 
     selectedSong.notes.forEach(note => {
@@ -886,8 +886,8 @@
     osc.type = 'sine';
     osc.frequency.value = midiToFrequency(midi);
     gain.gain.setValueAtTime(.001, now);
-    gain.gain.linearRampToValueAtTime(.11, now + .05);
-    gain.gain.setValueAtTime(.11, now + Math.max(.08, duration - .12));
+    gain.gain.linearRampToValueAtTime(.18, now + .05);
+    gain.gain.setValueAtTime(.18, now + Math.max(.08, duration - .12));
     gain.gain.exponentialRampToValueAtTime(.001, now + duration);
     osc.connect(gain).connect(audioContext.destination);
     osc.start(now);
@@ -900,7 +900,7 @@
     const gain = audioContext.createGain();
     osc.type = 'square';
     osc.frequency.value = frequency;
-    gain.gain.setValueAtTime(.075, audioContext.currentTime);
+    gain.gain.setValueAtTime(.14, audioContext.currentTime);
     gain.gain.exponentialRampToValueAtTime(.001, audioContext.currentTime + duration);
     osc.connect(gain).connect(audioContext.destination);
     osc.start();
@@ -1005,7 +1005,7 @@
     document.getElementById('currentNote').textContent = currentPitch ? midiToNoteName(Math.round(frequencyToMidi(currentPitch))) : '―';
     document.getElementById('targetNote').textContent = active?.midi != null ? midiToNoteName(active.midi) : '―';
     document.getElementById('remaining').textContent = `${Math.max(0, Math.ceil(duration - elapsed))}秒`;
-    document.getElementById('meterFill').style.width = `${Math.min(100, currentRms * 700)}%`;
+    document.getElementById('meterFill').style.width = `${Math.min(100, currentRms * 1800)}%`;
 
     if (active?.midi != null && currentPitch) {
       const cents = Math.abs(1200 * Math.log2(currentPitch / midiToFrequency(active.midi)));
@@ -1072,57 +1072,90 @@
   }
 
   function autoCorrelate(buffer, sampleRate) {
+    // RMS（音量）を計算
     let rms = 0;
-    for (let i = 0; i < buffer.length; i++) rms += buffer[i] * buffer[i];
+    let mean = 0;
+    for (let i = 0; i < buffer.length; i++) mean += buffer[i];
+    mean /= buffer.length;
+
+    const centered = new Float32Array(buffer.length);
+    for (let i = 0; i < buffer.length; i++) {
+      const v = buffer[i] - mean;
+      centered[i] = v;
+      rms += v * v;
+    }
     rms = Math.sqrt(rms / buffer.length);
-    if (rms < 0.018) return { frequency: null, rms };
 
-    let start = 0;
-    let end = buffer.length - 1;
-    const threshold = .2;
-    for (let i = 0; i < buffer.length / 2; i++) {
-      if (Math.abs(buffer[i]) < threshold) { start = i; break; }
-    }
-    for (let i = 1; i < buffer.length / 2; i++) {
-      if (Math.abs(buffer[buffer.length - i]) < threshold) { end = buffer.length - i; break; }
-    }
-    const slice = buffer.slice(start, end);
-    const size = slice.length;
-    if (size < 64) return { frequency: null, rms };
+    // 旧版0.018はChromebookの内蔵マイクには厳しすぎる場合がある。
+    // 小さめの歌声も拾いつつ、無音ノイズは除外。
+    if (rms < 0.0035) return { frequency: null, rms };
 
-    const minOffset = Math.floor(sampleRate / 1000);
-    const maxOffset = Math.min(Math.floor(sampleRate / 70), Math.floor(size / 2));
-    const correlations = new Float32Array(maxOffset + 1);
-    let bestOffset = -1;
-    let bestCorrelation = 0;
-    let foundGood = false;
-    const goodEnough = .9;
+    // 小学生の歌声＋教材音域を広めにカバー
+    const minFreq = 75;
+    const maxFreq = 1300;
+    const minLag = Math.max(2, Math.floor(sampleRate / maxFreq));
+    const maxLag = Math.min(
+      Math.floor(sampleRate / minFreq),
+      Math.floor(centered.length / 2)
+    );
 
-    for (let offset = minOffset; offset <= maxOffset; offset++) {
-      let diff = 0;
-      const len = size - offset;
-      for (let i = 0; i < len; i++) diff += Math.abs(slice[i] - slice[i + offset]);
-      const correlation = 1 - diff / len;
-      correlations[offset] = correlation;
-      if (correlation > goodEnough && correlation > bestCorrelation) {
-        foundGood = true;
-        bestCorrelation = correlation;
-        bestOffset = offset;
-      } else if (foundGood && correlation < bestCorrelation) {
+    let bestLag = -1;
+    let bestCorr = -1;
+    const correlations = new Float32Array(maxLag + 1);
+
+    // 正規化自己相関。
+    // 単純な差分法より、入力音量が小さい端末でも安定しやすい。
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      let sumXY = 0;
+      let sumXX = 0;
+      let sumYY = 0;
+      const len = centered.length - lag;
+
+      for (let i = 0; i < len; i++) {
+        const x = centered[i];
+        const y = centered[i + lag];
+        sumXY += x * y;
+        sumXX += x * x;
+        sumYY += y * y;
+      }
+
+      const denom = Math.sqrt(sumXX * sumYY);
+      const corr = denom > 1e-9 ? sumXY / denom : 0;
+      correlations[lag] = corr;
+
+      // 最初の強い局所ピークを優先し、倍音への飛びを減らす
+      const prev = lag > minLag ? correlations[lag - 1] : -1;
+      if (lag > minLag + 1 && prev > correlations[lag - 2] && prev >= corr && prev > 0.52) {
+        bestLag = lag - 1;
+        bestCorr = prev;
         break;
       }
-      if (!foundGood && correlation > bestCorrelation) {
-        bestCorrelation = correlation;
-        bestOffset = offset;
+
+      if (corr > bestCorr) {
+        bestCorr = corr;
+        bestLag = lag;
       }
     }
 
-    if (bestOffset <= 0 || bestCorrelation < .55) return { frequency: null, rms };
-    const prev = correlations[bestOffset - 1] || correlations[bestOffset];
-    const next = correlations[bestOffset + 1] || correlations[bestOffset];
-    const shift = (next - prev) / Math.max(.0001, 2 * (2 * correlations[bestOffset] - prev - next));
-    const frequency = sampleRate / (bestOffset + shift);
-    if (frequency < 70 || frequency > 1000) return { frequency: null, rms };
+    // 旧版0.55より少し緩め。声としての周期性は残す。
+    if (bestLag <= 0 || bestCorr < 0.42) return { frequency: null, rms };
+
+    // 放物線補間で周波数を少し滑らかにする
+    const c0 = correlations[bestLag] || bestCorr;
+    const c1 = correlations[bestLag - 1] || c0;
+    const c2 = correlations[bestLag + 1] || c0;
+    const denom = (c1 - 2 * c0 + c2);
+    let shift = 0;
+    if (Math.abs(denom) > 1e-6) {
+      shift = 0.5 * (c1 - c2) / denom;
+      shift = Math.max(-0.5, Math.min(0.5, shift));
+    }
+
+    const frequency = sampleRate / (bestLag + shift);
+    if (!Number.isFinite(frequency) || frequency < minFreq || frequency > maxFreq) {
+      return { frequency: null, rms };
+    }
+
     return { frequency, rms };
   }
 
