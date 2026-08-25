@@ -1,6 +1,6 @@
 
   // ★公開前に、先生ページに表示されたGASウェブアプリURL（/execで終わるもの）へ置き換えます。
-  const DEFAULT_API_URL = 'https://script.google.com/a/city.higashiosaka-osk.ed.jp/macros/s/AKfycbwmT9sC39S7h7LdliB51WnKUovn6M6PpC6_xOuxp_SThEcMqYzt/exec';
+  const DEFAULT_API_URL = 'https://script.google.com/a/macros/city.higashiosaka-osk.ed.jp/s/AKfycbwmT9sC39S7h7LdliB51WnKUovn6M6PpC6_xOuxp_SThEcMqYzt/exec';
 
   let apiUrl = '';
   let songs = [];
@@ -96,17 +96,23 @@
       if (url.protocol !== 'https:') return '';
       if (url.hostname !== 'script.google.com') return '';
 
-      // 通常のGAS URL:
-      // /macros/s/DEPLOYMENT_ID/exec
-      // 学校Google WorkspaceのGAS URL:
-      // /a/macros/DOMAIN/s/DEPLOYMENT_ID/exec
-      const path = url.pathname;
-      const isGasWebApp =
-        path.endsWith('/exec') &&
-        path.includes('/macros/') &&
-        path.includes('/s/');
+      // 通常:
+      //   /macros/s/DEPLOYMENT_ID/exec
+      // 学校Google Workspace:
+      //   /a/macros/DOMAIN/s/DEPLOYMENT_ID/exec
+      //
+      // 以前の版で誤って
+      //   /a/DOMAIN/macros/s/DEPLOYMENT_ID/exec
+      // の形を保存していた場合も、正しい形へ自動修正します。
+      const legacy = url.pathname.match(/^\/a\/([^/]+)\/macros\/s\/([^/]+)\/exec$/);
+      if (legacy) {
+        url.pathname = `/a/macros/${legacy[1]}/s/${legacy[2]}/exec`;
+      }
 
-      if (!isGasWebApp) return '';
+      const path = url.pathname;
+      const isStandard = /^\/macros\/s\/[^/]+\/exec$/.test(path);
+      const isWorkspace = /^\/a\/macros\/[^/]+\/s\/[^/]+\/exec$/.test(path);
+      if (!isStandard && !isWorkspace) return '';
 
       url.search = '';
       url.hash = '';
