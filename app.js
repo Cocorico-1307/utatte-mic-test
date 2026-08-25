@@ -441,7 +441,7 @@
         beatCount: count,
         activeBeat: i,
       });
-      playBeep(i === 1 ? 880 : 620, Math.min(.10, beatMs / 3000));
+      playCountClick(i === 1);
       await sleep(beatMs);
       if (!audioContext) return;
     }
@@ -542,17 +542,8 @@
     const result = calculateResults();
     showResult(result);
 
-    const fullGuidePractice =
-      document.getElementById('guideTone').checked &&
-      document.getElementById('guideMode').value === 'full';
-
-    if (fullGuidePractice) {
-      const saveStatus = document.getElementById('saveStatus');
-      saveStatus.textContent = '練習モードなのでランキング記録には保存していません。';
-      saveStatus.className = 'status muted';
-    } else {
-      submitScore(result);
-    }
+    // 音価どおりのガイドを使った場合も採点結果を保存します。
+    submitScore(result);
 
     await releaseAudio();
     document.getElementById('startButton').disabled = classroomPaused || !selectedSong || !currentLessonCode;
@@ -849,16 +840,13 @@
   function scheduleGuideMelody(startAt = audioContext.currentTime + .08) {
     const volumeStep = Math.max(1, Math.min(10, Number(document.getElementById('guideVolume')?.value || 4)));
     const peakGain = 0.025 + volumeStep * 0.018;
-    const mode = document.getElementById('guideMode')?.value || 'full';
 
     selectedSong.notes.forEach(note => {
       if (note.midi == null) return;
 
       const noteStart = startAt + Number(note.start || 0);
-      const originalDuration = Math.max(0.06, Number(note.duration || 0.25));
-      const soundingDuration = mode === 'attack'
-        ? Math.min(originalDuration, 0.22)
-        : originalDuration;
+      // 見本の音は、先生が入力した音価の長さだけしっかり鳴らします。
+      const soundingDuration = Math.max(0.06, Number(note.duration || 0.25));
       const noteEnd = noteStart + soundingDuration;
       const attackEnd = noteStart + Math.min(0.025, soundingDuration * 0.25);
       const releaseStart = Math.max(attackEnd, noteEnd - Math.min(0.06, soundingDuration * 0.35));
@@ -894,17 +882,30 @@
     osc.stop(now + duration + .03);
   }
 
-  function playBeep(frequency, duration) {
+  function playCountClick(accent = false) {
     if (!audioContext) return;
-    const osc = audioContext.createOscillator();
+
+    // 特定の音高を持たない短いノイズクリック。
+    // 「はじめの音」の音程記憶を邪魔しにくいカウントです。
+    const duration = accent ? 0.075 : 0.055;
+    const sampleRate = audioContext.sampleRate;
+    const frameCount = Math.max(1, Math.floor(sampleRate * duration));
+    const buffer = audioContext.createBuffer(1, frameCount, sampleRate);
+    const data = buffer.getChannelData(0);
+
+    for (let i = 0; i < frameCount; i++) {
+      const envelope = Math.pow(1 - i / frameCount, 3);
+      data[i] = (Math.random() * 2 - 1) * envelope;
+    }
+
+    const source = audioContext.createBufferSource();
     const gain = audioContext.createGain();
-    osc.type = 'square';
-    osc.frequency.value = frequency;
-    gain.gain.setValueAtTime(.14, audioContext.currentTime);
-    gain.gain.exponentialRampToValueAtTime(.001, audioContext.currentTime + duration);
-    osc.connect(gain).connect(audioContext.destination);
-    osc.start();
-    osc.stop(audioContext.currentTime + duration);
+    gain.gain.setValueAtTime(accent ? 0.28 : 0.20, audioContext.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + duration);
+
+    source.buffer = buffer;
+    source.connect(gain).connect(audioContext.destination);
+    source.start();
   }
 
   function drawIdleCanvas() {
