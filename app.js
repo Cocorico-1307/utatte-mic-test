@@ -23,6 +23,14 @@
   let pendingSaveRequestId = '';
   let lastCanvasWidth = 0;
   let lastCanvasHeight = 0;
+  let latestClassRanking = [];
+  const sessionScoreHistory = new Map();
+  const sessionBadgesByStudent = new Map();
+  const sessionAttemptsByStudent = new Map();
+
+  // 通常の児童URLには出さない、先生専用の仮想テストクラス。
+  const teacherTestMode =
+    new URLSearchParams(window.location.search).get('teacherTest') === '1';
 
   document.addEventListener('DOMContentLoaded', init);
   window.addEventListener('resize', resizeCanvas);
@@ -37,6 +45,11 @@
     if (data.ok) {
       saveStatus.textContent = '✅ スプレッドシートに記録しました。';
       saveStatus.className = 'status success';
+      // 新しい記録が入ったので、少し待ってからランキングとクラスの木を更新。
+      setTimeout(() => {
+        loadClassRanking();
+        loadClassGarden();
+      }, 500);
     } else {
       saveStatus.textContent = '❌ 記録できませんでした：' + (data.message || '先生に確認してください。');
       saveStatus.className = 'status error';
@@ -57,6 +70,10 @@
     document.getElementById('startButton')?.addEventListener('click', startGame);
     document.getElementById('stopButton')?.addEventListener('click', () => stopGame(true));
     document.getElementById('retryButton')?.addEventListener('click', startGame);
+    document.getElementById('refreshRankingButton')?.addEventListener('click', loadClassRanking);
+    document.getElementById('refreshGardenButton')?.addEventListener('click', loadClassGarden);
+    renderBadgeGallery();
+    applyTeacherTestMode();
 
     const guideVolume = document.getElementById('guideVolume');
     const guideVolumeValue = document.getElementById('guideVolumeValue');
@@ -265,7 +282,31 @@
     const firstNote = selectedSong?.notes?.find(note => note.midi != null);
     document.getElementById('targetNote').textContent = firstNote ? midiToJapaneseNoteName(firstNote.midi) : '―';
     document.getElementById('startButton').disabled = classroomPaused || !selectedSong || !currentLessonCode;
-    if (selectedSong) setStatus('スタートすると、はじめの音のあとにカウントが鳴ります。');
+    if (selectedSong) {
+      setStatus('スタートすると、はじめの音のあとにカウントが鳴ります。');
+      loadClassRanking();
+      loadClassGarden();
+    } else {
+      latestClassRanking = [];
+      renderClassRanking([]);
+    }
+  }
+
+
+  function applyTeacherTestMode() {
+    if (!teacherTestMode) return;
+
+    document.getElementById('teacherTestBanner')?.classList.remove('hidden');
+
+    // 実在クラスを誤って選んで保存するのを防ぎます。
+    ['gradeSelect', 'classSelect', 'attendanceNumber'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = true;
+    });
+
+    // テスト時はクラス集計を表示しません。
+    document.getElementById('classGardenCard')?.classList.add('hidden');
+    document.getElementById('classRankingCard')?.classList.add('hidden');
   }
 
   function setupSchoolSelectors() {
@@ -290,7 +331,10 @@
         sessionStorage.setItem('singScoreGrade', document.getElementById('gradeSelect').value);
         sessionStorage.setItem('singScoreClass', document.getElementById('classSelect').value);
         sessionStorage.setItem('singScoreAttendance', document.getElementById('attendanceNumber').value);
-        // ランキングは全学年共通なので、学年・組を変えても内容は変わりません。
+        // ランキングの中で「自分のクラス」の強調表示だけ更新します。
+        renderClassRanking(latestClassRanking);
+        renderBadgeGallery();
+        loadClassGarden();
       });
     });
   }
@@ -352,7 +396,7 @@
       await audioContext.resume();
       const source = audioContext.createMediaStreamSource(micStream);
       analyser = audioContext.createAnalyser();
-      analyser.fftSize = 2048;
+      analyser.fftSize = 4096;
       analyser.smoothingTimeConstant = 0;
       source.connect(analyser);
       timeData = new Float32Array(analyser.fftSize);
@@ -392,8 +436,15 @@
       if (document.getElementById('guideTone').checked) {
         scheduleGuideMelody(synchronizedAudioStart);
       }
+      if (document.getElementById('metronomeMode')?.checked) {
+        scheduleMetronome(synchronizedAudioStart);
+      }
 
-      setStatus('ガイドメロディーに合わせて、うたってください！');
+      setStatus(
+        document.getElementById('metronomeMode')?.checked
+          ? 'メトロノームの拍に合わせて、うたってください！'
+          : 'ガイドメロディーに合わせて、うたってください！'
+      );
       animate();
     } catch (err) {
       await releaseAudio();
@@ -486,7 +537,7 @@
     const elapsed = (now - songStartPerf) / 1000;
     const duration = getSongDuration(selectedSong);
 
-    if (now - lastPitchCheck >= 45) {
+    if (now - lastPitchCheck >= 60) {
       analyser.getFloatTimeDomainData(timeData);
       const result = autoCorrelate(timeData, audioContext.sampleRate);
       currentPitch = result.frequency;
@@ -512,6 +563,16 @@
     const note = selectedSong.notes[index];
     if (note.midi == null) return;
     const stat = stats[index];
+
+    // 曲中メトロノームのクリックがスピーカーからマイクへ回り込み、
+    // 「大きい声」と誤判定されないよう、拍頭のごく短い区間だけ採点から除外します。
+    if (document.getElementById('metronomeMode')?.checked) {
+      const bpm = Math.max(30, Math.min(300, Number(selectedSong?.bpm || 100)));
+      const beatSec = 60 / bpm;
+      const phase = ((elapsed % beatSec) + beatSec) % beatSec;
+      const distanceToBeat = Math.min(phase, beatSec - phase);
+      if (distanceToBeat < 0.045) return;
+    }
 
     stat.totalSamples++;
 
@@ -750,6 +811,8 @@
     document.getElementById('maxCombo').textContent = result.maxCombo;
     document.getElementById('judgedNotes').textContent = result.noteCount;
     document.getElementById('resultTip').textContent = getPracticeTip(result);
+    updateSessionProgress(result);
+    awardSessionBadges(result);
 
     card.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
@@ -790,6 +853,295 @@
       if (progress < 1) requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
+  }
+
+
+
+  const BADGE_DEFINITIONS = [
+    { id: 'first', icon: '🌱', name: 'はじめの一歩', condition: '1回チャレンジ' },
+    { id: 'pitch80', icon: '🎯', name: '音程スター', condition: '音程80点以上' },
+    { id: 'rhythm85', icon: '🥁', name: 'リズムマスター', condition: 'リズム85点以上' },
+    { id: 'voice80', icon: '📣', name: 'いい声！', condition: '声量80点以上' },
+    { id: 'long80', icon: '🌬️', name: 'ロングトーン名人', condition: 'ロングトーン80点以上' },
+    { id: 'smooth80', icon: '🌊', name: 'なめらか名人', condition: 'なめらかさ80点以上' },
+    { id: 'attempt3', icon: '🔥', name: 'チャレンジャー', condition: 'このページで3回歌う' },
+    { id: 'rankA', icon: '⭐', name: 'Aランク！', condition: '総合80点以上' },
+    { id: 'rankS', icon: '👑', name: 'Sランク！', condition: '総合90点以上' },
+  ];
+
+  function getCurrentStudentIdentityKey() {
+    const grade = document.getElementById('gradeSelect')?.value || '';
+    const classNumber = document.getElementById('classSelect')?.value || '';
+    const attendanceNumber = document.getElementById('attendanceNumber')?.value || '';
+    if (!grade || !classNumber || !attendanceNumber) return '';
+    return `${grade}|${classNumber}|${attendanceNumber}`;
+  }
+
+  function getCurrentBadgeSet() {
+    const key = getCurrentStudentIdentityKey();
+    if (!key) return new Set();
+    if (!sessionBadgesByStudent.has(key)) {
+      sessionBadgesByStudent.set(key, new Set());
+    }
+    return sessionBadgesByStudent.get(key);
+  }
+
+  function awardSessionBadges(result) {
+    const key = getCurrentStudentIdentityKey();
+    if (!key) return;
+
+    const attempts = (sessionAttemptsByStudent.get(key) || 0) + 1;
+    sessionAttemptsByStudent.set(key, attempts);
+
+    const badges = getCurrentBadgeSet();
+    const newlyUnlocked = [];
+
+    const unlock = (id, ok) => {
+      if (!ok || badges.has(id)) return;
+      badges.add(id);
+      newlyUnlocked.push(id);
+    };
+
+    unlock('first', true);
+    unlock('pitch80', Number(result.pitchScore || 0) >= 80);
+    unlock('rhythm85', Number(result.rhythmScore || 0) >= 85);
+    unlock('voice80', Number(result.singingScore || 0) >= 80);
+    unlock('long80', Number(result.longToneScore || 0) >= 80);
+    unlock('smooth80', Number(result.stabilityScore || 0) >= 80);
+    unlock('attempt3', attempts >= 3);
+    unlock('rankA', Number(result.totalScore || 0) >= 80);
+    unlock('rankS', Number(result.totalScore || 0) >= 90);
+
+    renderBadgeGallery(newlyUnlocked);
+
+    const banner = document.getElementById('newBadgeBanner');
+    if (!banner) return;
+
+    if (newlyUnlocked.length) {
+      const names = BADGE_DEFINITIONS
+        .filter(b => newlyUnlocked.includes(b.id))
+        .map(b => `${b.icon} ${b.name}`);
+      banner.textContent = `🎉 NEW BADGE！ ${names.join('・')}`;
+      banner.classList.remove('hidden');
+    } else {
+      banner.classList.add('hidden');
+      banner.textContent = '';
+    }
+  }
+
+  function renderBadgeGallery(newlyUnlocked = []) {
+    const gallery = document.getElementById('badgeGallery');
+    if (!gallery) return;
+
+    const badges = getCurrentBadgeSet();
+    gallery.innerHTML = '';
+
+    BADGE_DEFINITIONS.forEach(def => {
+      const unlocked = badges.has(def.id);
+      const item = document.createElement('div');
+      item.className =
+        `badge-item ${unlocked ? 'unlocked' : 'locked'} ` +
+        `${newlyUnlocked.includes(def.id) ? 'just-unlocked' : ''}`;
+
+      const icon = document.createElement('div');
+      icon.className = 'badge-icon';
+      icon.textContent = unlocked ? def.icon : '🔒';
+
+      const name = document.createElement('div');
+      name.className = 'badge-name';
+      name.textContent = def.name;
+
+      const condition = document.createElement('div');
+      condition.className = 'badge-condition';
+      condition.textContent = unlocked ? 'ゲット！' : def.condition;
+
+      item.append(icon, name, condition);
+      gallery.appendChild(item);
+    });
+  }
+
+  async function loadClassGarden() {
+    if (teacherTestMode) return;
+    const icon = document.getElementById('gardenIcon');
+    const stage = document.getElementById('gardenStage');
+    const fill = document.getElementById('gardenFill');
+    const next = document.getElementById('gardenNext');
+    if (!icon || !stage || !fill || !next) return;
+
+    if (!apiUrl || !currentLessonCode) {
+      icon.textContent = '🌰';
+      stage.textContent = 'まだ たね です';
+      fill.style.width = '0%';
+      next.textContent = '教材を読み込むとクラスの木が表示されます。';
+      return;
+    }
+
+    const grade = Number(document.getElementById('gradeSelect')?.value || 0);
+    const classNumber = Number(document.getElementById('classSelect')?.value || 0);
+    if (!grade || !classNumber) return;
+
+    next.textContent = 'クラスの木を読み込んでいます…';
+
+    try {
+      const data = await jsonp({
+        action: 'classGarden',
+        lessonCode: currentLessonCode,
+        grade,
+        classNumber,
+      });
+
+      if (!data?.ok || !data.garden) {
+        throw new Error(data?.message || 'クラスの木を読み込めませんでした。');
+      }
+
+      const garden = data.garden;
+      icon.textContent = garden.stageIcon || '🌰';
+      stage.textContent = `${garden.className || ''}　${garden.stageLabel || ''}`;
+      fill.style.width = `${Math.max(0, Math.min(100, Number(garden.progressPercent || 0)))}%`;
+
+      if (garden.completed) {
+        next.textContent = '🎊 にじの木が完成！ みんなで育てきりました！';
+      } else {
+        next.textContent =
+          `あと${Number(garden.pointsToNext || 0)}ポイントで「${garden.nextStageLabel || '次の成長'}」！`;
+      }
+    } catch (err) {
+      icon.textContent = '🌰';
+      stage.textContent = `${grade}年${classNumber}組の木`;
+      fill.style.width = '0%';
+      next.textContent = err?.message || 'クラスの木を読み込めませんでした。';
+    }
+  }
+
+  function getCurrentStudentSessionKey() {
+    if (!selectedSong) return '';
+    const grade = document.getElementById('gradeSelect')?.value || '';
+    const classNumber = document.getElementById('classSelect')?.value || '';
+    const attendanceNumber = document.getElementById('attendanceNumber')?.value || '';
+    return `${selectedSong.songId}|${grade}|${classNumber}|${attendanceNumber}`;
+  }
+
+  function updateSessionProgress(result) {
+    const box = document.getElementById('sessionProgress');
+    if (!box) return;
+
+    const key = getCurrentStudentSessionKey();
+    if (!key) {
+      box.classList.add('hidden');
+      return;
+    }
+
+    const score = Number(result.totalScore || 0);
+    const previous = sessionScoreHistory.get(key) || { attempts: 0, best: null, last: null };
+    const oldBest = previous.best;
+    const attempts = previous.attempts + 1;
+    const newBest = oldBest == null ? score : Math.max(oldBest, score);
+
+    sessionScoreHistory.set(key, {
+      attempts,
+      best: newBest,
+      last: score,
+    });
+
+    if (oldBest == null) {
+      box.textContent =
+        `🌱 このページでの自己ベスト：${formatScore(score)}点（${attempts}回目）`;
+    } else if (score > oldBest) {
+      box.textContent =
+        `🎉 自己ベスト更新！ ${formatScore(score)}点（前のベストから +${formatScore(score - oldBest)}点）`;
+    } else {
+      box.textContent =
+        `⭐ このページでの自己ベスト：${formatScore(newBest)}点　今回：${formatScore(score)}点（${attempts}回目）`;
+    }
+
+    box.classList.remove('hidden');
+    box.title = 'この表示は今開いているページの中だけで記録し、サーバーから個人の過去点は読み出しません。';
+  }
+
+  async function loadClassRanking() {
+    if (teacherTestMode) return;
+    const message = document.getElementById('classRankingMessage');
+    if (!message) return;
+
+    if (!apiUrl || !currentLessonCode || !selectedSong) {
+      latestClassRanking = [];
+      renderClassRanking([]);
+      message.textContent = '教材を読み込むとランキングが表示されます。';
+      message.className = 'small muted';
+      return;
+    }
+
+    message.textContent = 'ランキングを読み込んでいます…';
+    message.className = 'small muted';
+
+    try {
+      const data = await jsonp({
+        action: 'classRanking',
+        lessonCode: currentLessonCode,
+        songId: selectedSong.songId,
+      });
+
+      if (!data?.ok) {
+        throw new Error(data?.message || 'ランキングを読み込めませんでした。');
+      }
+
+      latestClassRanking = Array.isArray(data.ranking) ? data.ranking : [];
+      renderClassRanking(latestClassRanking);
+
+      if (latestClassRanking.length) {
+        message.textContent =
+          '5人以上が参加したクラスのみ表示しています。平均点は整数表示です。';
+        message.className = 'small success';
+      } else {
+        message.textContent =
+          `まだ表示できるクラスがありません。各クラス${Number(data.minimumParticipants || 5)}人以上参加すると表示されます。`;
+        message.className = 'small muted';
+      }
+    } catch (err) {
+      latestClassRanking = [];
+      renderClassRanking([]);
+      message.textContent = err?.message || 'ランキングの読み込みに失敗しました。';
+      message.className = 'small error';
+    }
+  }
+
+  function renderClassRanking(rows) {
+    const list = document.getElementById('classRankingList');
+    if (!list) return;
+
+    list.innerHTML = '';
+    if (!Array.isArray(rows) || !rows.length) return;
+
+    const ownClass =
+      `${document.getElementById('gradeSelect')?.value || ''}年` +
+      `${document.getElementById('classSelect')?.value || ''}組`;
+
+    rows.forEach(row => {
+      const item = document.createElement('div');
+      item.className = 'class-rank-row';
+      if (String(row.className) === ownClass) item.classList.add('my-class');
+
+      const place = document.createElement('div');
+      place.className = 'class-rank-place';
+      place.textContent =
+        Number(row.rank) === 1 ? '🥇' :
+        Number(row.rank) === 2 ? '🥈' :
+        Number(row.rank) === 3 ? '🥉' :
+        `${Number(row.rank) || '―'}位`;
+
+      const name = document.createElement('div');
+      name.className = 'class-rank-name';
+      name.textContent =
+        String(row.className || '') +
+        (String(row.className || '') === ownClass ? '　← あなたのクラス' : '');
+
+      const score = document.createElement('div');
+      score.className = 'class-rank-score';
+      score.textContent = `${Math.round(Number(row.averageScore || 0))}点`;
+
+      item.append(place, name, score);
+      list.appendChild(item);
+    });
   }
 
   function getScoreRank(score) {
@@ -847,11 +1199,18 @@
   }
 
   function submitScore(result) {
+    const saveStatus = document.getElementById('saveStatus');
+
+    if (teacherTestMode) {
+      pendingSaveRequestId = '';
+      saveStatus.textContent = '🧪 先生テストモード：この結果は保存していません。';
+      saveStatus.className = 'status success';
+      return;
+    }
+
     const requestId = (crypto.randomUUID ? crypto.randomUUID() :
       'req-' + Date.now() + '-' + Math.random().toString(36).slice(2));
     pendingSaveRequestId = requestId;
-
-    const saveStatus = document.getElementById('saveStatus');
     saveStatus.textContent = '記録を保存しています…';
     saveStatus.className = 'status muted';
 
@@ -954,6 +1313,46 @@
     });
   }
 
+
+  function scheduleMetronome(startAt) {
+    if (!audioContext || !selectedSong) return;
+
+    const bpm = Math.max(30, Math.min(300, Number(selectedSong.bpm || 100)));
+    const beatSec = 60 / bpm;
+    const duration = getSongDuration(selectedSong);
+
+    for (let beat = 0, t = 0; t <= duration + 0.02; beat++, t += beatSec) {
+      // 最初の拍だけ少し強く、以降は同じ音程のないクリック。
+      scheduleNoiseClick(startAt + t, beat === 0, beat === 0 ? 0.16 : 0.11);
+    }
+  }
+
+  function scheduleNoiseClick(when, accent = false, level = 0.12) {
+    if (!audioContext) return;
+
+    const duration = accent ? 0.038 : 0.030;
+    const sampleRate = audioContext.sampleRate;
+    const frameCount = Math.max(1, Math.floor(sampleRate * duration));
+    const buffer = audioContext.createBuffer(1, frameCount, sampleRate);
+    const data = buffer.getChannelData(0);
+
+    for (let i = 0; i < frameCount; i++) {
+      const envelope = Math.pow(1 - i / frameCount, 4);
+      data[i] = (Math.random() * 2 - 1) * envelope;
+    }
+
+    const source = audioContext.createBufferSource();
+    const gain = audioContext.createGain();
+    gain.gain.setValueAtTime(Math.max(0.001, level), when);
+    gain.gain.exponentialRampToValueAtTime(0.001, when + duration);
+
+    source.buffer = buffer;
+    source.connect(gain).connect(audioContext.destination);
+    source.start(when);
+    source.stop(when + duration + 0.01);
+    guideNodes.push(source);
+  }
+
   function playReferenceTone(midi, duration) {
     if (!audioContext) return;
     const now = audioContext.currentTime;
@@ -972,29 +1371,13 @@
 
   function playCountClick(accent = false) {
     if (!audioContext) return;
-
-    // 特定の音高を持たない短いノイズクリック。
-    // 「はじめの音」の音程記憶を邪魔しにくいカウントです。
-    const duration = accent ? 0.075 : 0.055;
-    const sampleRate = audioContext.sampleRate;
-    const frameCount = Math.max(1, Math.floor(sampleRate * duration));
-    const buffer = audioContext.createBuffer(1, frameCount, sampleRate);
-    const data = buffer.getChannelData(0);
-
-    for (let i = 0; i < frameCount; i++) {
-      const envelope = Math.pow(1 - i / frameCount, 3);
-      data[i] = (Math.random() * 2 - 1) * envelope;
-    }
-
-    const source = audioContext.createBufferSource();
-    const gain = audioContext.createGain();
-    gain.gain.setValueAtTime(accent ? 0.28 : 0.20, audioContext.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + duration);
-
-    source.buffer = buffer;
-    source.connect(gain).connect(audioContext.destination);
-    source.start();
+    scheduleNoiseClick(
+      audioContext.currentTime,
+      accent,
+      accent ? 0.28 : 0.20
+    );
   }
+
 
   function drawIdleCanvas() {
     resizeCanvas();
@@ -1024,8 +1407,27 @@
       return;
     }
     const midiValues = pitched.map(n => n.midi);
-    const minMidi = Math.min(...midiValues) - 2;
-    const maxMidi = Math.max(...midiValues) + 2;
+    const songMinMidi = Math.min(...midiValues);
+    const songMaxMidi = Math.max(...midiValues);
+
+    let visiblePitchMidi = null;
+    if (currentPitch) {
+      const rawMidi = frequencyToMidi(currentPitch);
+      // 極端なノイズで画面全体が縮まないよう、曲の上下1オクターブまで表示。
+      visiblePitchMidi = Math.max(
+        songMinMidi - 12,
+        Math.min(songMaxMidi + 12, rawMidi)
+      );
+    }
+
+    const minMidi = Math.min(
+      songMinMidi - 3,
+      visiblePitchMidi == null ? Infinity : visiblePitchMidi - 1
+    );
+    const maxMidi = Math.max(
+      songMaxMidi + 3,
+      visiblePitchMidi == null ? -Infinity : visiblePitchMidi + 1
+    );
     const top = 28;
     const bottom = h - 28;
     const past = 1.65;
@@ -1173,7 +1575,11 @@
   }
 
   function autoCorrelate(buffer, sampleRate) {
-    // RMS（音量）を計算
+    // YIN法に近い周期検出。
+    // 旧版の「最初の強い自己相関ピーク」を選ぶ方式は、
+    // 声の倍音が強いと低いドを1オクターブ高いドとして拾うことがありました。
+    // 今回は基音の周期を優先して探し、音域も広げています。
+
     let rms = 0;
     let mean = 0;
     for (let i = 0; i < buffer.length; i++) mean += buffer[i];
@@ -1187,72 +1593,84 @@
     }
     rms = Math.sqrt(rms / buffer.length);
 
-    // 旧版0.018はChromebookの内蔵マイクには厳しすぎる場合がある。
-    // 小さめの歌声も拾いつつ、無音ノイズは除外。
     if (rms < 0.0035) return { frequency: null, rms };
 
-    // 小学生の歌声＋教材音域を広めにカバー
-    const minFreq = 75;
-    const maxFreq = 1300;
-    const minLag = Math.max(2, Math.floor(sampleRate / maxFreq));
-    const maxLag = Math.min(
+    // 約 C2(65Hz) より下～C7(2093Hz) より少し上まで。
+    // 先生の鍵盤も C2～C7 に広げます。
+    const minFreq = 55;
+    const maxFreq = 2300;
+
+    const minTau = Math.max(2, Math.floor(sampleRate / maxFreq));
+    const maxTau = Math.min(
       Math.floor(sampleRate / minFreq),
-      Math.floor(centered.length / 2)
+      Math.floor(centered.length / 2) - 1
     );
 
-    let bestLag = -1;
-    let bestCorr = -1;
-    const correlations = new Float32Array(maxLag + 1);
+    if (maxTau <= minTau + 2) return { frequency: null, rms };
 
-    // 正規化自己相関。
-    // 単純な差分法より、入力音量が小さい端末でも安定しやすい。
-    for (let lag = minLag; lag <= maxLag; lag++) {
-      let sumXY = 0;
-      let sumXX = 0;
-      let sumYY = 0;
-      const len = centered.length - lag;
+    const diff = new Float32Array(maxTau + 1);
+    const cmnd = new Float32Array(maxTau + 1);
+    cmnd[0] = 1;
 
+    for (let tau = 1; tau <= maxTau; tau++) {
+      let sum = 0;
+      const len = centered.length - tau;
       for (let i = 0; i < len; i++) {
-        const x = centered[i];
-        const y = centered[i + lag];
-        sumXY += x * y;
-        sumXX += x * x;
-        sumYY += y * y;
+        const delta = centered[i] - centered[i + tau];
+        sum += delta * delta;
       }
+      diff[tau] = sum;
+    }
 
-      const denom = Math.sqrt(sumXX * sumYY);
-      const corr = denom > 1e-9 ? sumXY / denom : 0;
-      correlations[lag] = corr;
+    let runningSum = 0;
+    for (let tau = 1; tau <= maxTau; tau++) {
+      runningSum += diff[tau];
+      cmnd[tau] = runningSum > 1e-12
+        ? diff[tau] * tau / runningSum
+        : 1;
+    }
 
-      // 最初の強い局所ピークを優先し、倍音への飛びを減らす
-      const prev = lag > minLag ? correlations[lag - 1] : -1;
-      if (lag > minLag + 1 && prev > correlations[lag - 2] && prev >= corr && prev > 0.52) {
-        bestLag = lag - 1;
-        bestCorr = prev;
+    // まず「十分周期的」な最初の谷を探す。
+    // YINの考え方により、倍音の山より基音周期を拾いやすくします。
+    const threshold = 0.18;
+    let tauEstimate = -1;
+
+    for (let tau = minTau; tau <= maxTau; tau++) {
+      if (cmnd[tau] < threshold) {
+        while (tau + 1 <= maxTau && cmnd[tau + 1] < cmnd[tau]) tau++;
+        tauEstimate = tau;
         break;
       }
+    }
 
-      if (corr > bestCorr) {
-        bestCorr = corr;
-        bestLag = lag;
+    // 閾値を下回らない声でも、一番周期性の高い谷を使う。
+    if (tauEstimate < 0) {
+      let bestValue = 1;
+      for (let tau = minTau; tau <= maxTau; tau++) {
+        if (cmnd[tau] < bestValue) {
+          bestValue = cmnd[tau];
+          tauEstimate = tau;
+        }
+      }
+      if (tauEstimate < 0 || bestValue > 0.42) {
+        return { frequency: null, rms };
       }
     }
 
-    // 旧版0.55より少し緩め。声としての周期性は残す。
-    if (bestLag <= 0 || bestCorr < 0.42) return { frequency: null, rms };
-
-    // 放物線補間で周波数を少し滑らかにする
-    const c0 = correlations[bestLag] || bestCorr;
-    const c1 = correlations[bestLag - 1] || c0;
-    const c2 = correlations[bestLag + 1] || c0;
-    const denom = (c1 - 2 * c0 + c2);
-    let shift = 0;
-    if (Math.abs(denom) > 1e-6) {
-      shift = 0.5 * (c1 - c2) / denom;
-      shift = Math.max(-0.5, Math.min(0.5, shift));
+    // 放物線補間
+    let refinedTau = tauEstimate;
+    if (tauEstimate > minTau && tauEstimate < maxTau) {
+      const s0 = cmnd[tauEstimate - 1];
+      const s1 = cmnd[tauEstimate];
+      const s2 = cmnd[tauEstimate + 1];
+      const denom = 2 * (2 * s1 - s2 - s0);
+      if (Math.abs(denom) > 1e-9) {
+        const shift = (s2 - s0) / denom;
+        refinedTau += Math.max(-0.5, Math.min(0.5, shift));
+      }
     }
 
-    const frequency = sampleRate / (bestLag + shift);
+    const frequency = sampleRate / refinedTau;
     if (!Number.isFinite(frequency) || frequency < minFreq || frequency > maxFreq) {
       return { frequency: null, rms };
     }
