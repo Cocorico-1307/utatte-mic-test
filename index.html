@@ -171,7 +171,85 @@
     }
     .classroom-pause .panel { max-width: 620px; padding: 28px; border: 1px solid rgba(255,255,255,.25); border-radius: 24px; background: rgba(30,41,59,.95); }
     .classroom-pause h2 { margin: 0 0 10px; font-size: clamp(28px, 6vw, 48px); }
+    .session-progress {
+      margin-top: 12px; padding: 14px 16px; border-radius: 15px;
+      background: #f0fdf4; border: 1px solid #bbf7d0; font-weight: 850;
+    }
+    .class-ranking-list { display: grid; gap: 9px; margin-top: 12px; }
+    .class-rank-row {
+      display: grid; grid-template-columns: 58px 1fr auto; gap: 10px;
+      align-items: center; padding: 12px 14px; border-radius: 14px;
+      border: 1px solid var(--line); background: #fff;
+    }
+    .class-rank-row.my-class {
+      outline: 3px solid rgba(37, 99, 235, .18);
+      background: #eff6ff;
+    }
+    .class-rank-place { font-size: 23px; font-weight: 950; text-align: center; }
+    .class-rank-name { font-size: 18px; font-weight: 900; }
+    .class-rank-score { font-size: 24px; font-weight: 950; white-space: nowrap; }
+    .ranking-note {
+      padding: 11px 13px; border-radius: 13px; background: #f8fafc;
+      border: 1px solid var(--line); font-size: 13px; color: var(--muted);
+    }
+    .badge-gallery {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+      gap: 10px; margin-top: 12px;
+    }
+    .badge-item {
+      min-height: 105px; display: flex; flex-direction: column; justify-content: center;
+      align-items: center; gap: 5px; text-align: center; padding: 12px 9px;
+      border-radius: 16px; border: 1px solid var(--line); background: #f8fafc;
+      transition: transform .18s ease, box-shadow .18s ease;
+    }
+    .badge-item.unlocked {
+      background: linear-gradient(180deg, #fff7ed, #fffbeb);
+      border-color: #fbbf24; box-shadow: 0 5px 18px rgba(245, 158, 11, .12);
+    }
+    .badge-item.just-unlocked { animation: badge-pop .7s ease; }
+    .badge-icon { font-size: 34px; line-height: 1; }
+    .badge-name { font-weight: 950; font-size: 14px; }
+    .badge-condition { color: var(--muted); font-size: 11px; line-height: 1.35; }
+    .badge-item.locked .badge-icon { filter: grayscale(1); opacity: .45; }
+    .badge-item.locked .badge-name,
+    .badge-item.locked .badge-condition { opacity: .55; }
+    .new-badge-banner {
+      margin-top: 12px; padding: 14px 16px; border-radius: 15px;
+      background: #fffbeb; border: 2px solid #fbbf24; font-weight: 950;
+      text-align: center; font-size: 17px;
+    }
+    @keyframes badge-pop {
+      0% { transform: scale(.82) rotate(-2deg); }
+      55% { transform: scale(1.08) rotate(1deg); }
+      100% { transform: scale(1); }
+    }
+    .garden-wrap {
+      display: grid; grid-template-columns: 130px 1fr; gap: 18px;
+      align-items: center; margin-top: 14px;
+    }
+    .garden-icon {
+      font-size: 88px; line-height: 1; text-align: center;
+      filter: drop-shadow(0 8px 12px rgba(15, 23, 42, .10));
+    }
+    .garden-stage { font-size: 24px; font-weight: 950; margin-bottom: 8px; }
+    .garden-track {
+      height: 20px; border-radius: 999px; overflow: hidden;
+      background: #e2e8f0; border: 1px solid #cbd5e1;
+    }
+    .garden-fill {
+      height: 100%; width: 0%; border-radius: inherit;
+      background: linear-gradient(90deg, #22c55e, #84cc16);
+      transition: width .7s ease;
+    }
+    .garden-next { margin-top: 7px; font-weight: 800; }
+    .teacher-test-banner {
+      margin: 0 auto 14px; max-width: 1050px; padding: 12px 16px;
+      border-radius: 14px; background: #f1f5f9; border: 1px dashed #64748b;
+      font-weight: 900; text-align: center; color: #334155;
+    }
     @media (max-width: 720px) {
+      .garden-wrap { grid-template-columns: 1fr; }
+      .garden-icon { font-size: 74px; }
       .grid.four { grid-template-columns: 1fr 1fr; }
       .ranking-grid { grid-template-columns: 1fr; }
       .hud { grid-template-columns: repeat(2, 1fr); }
@@ -187,6 +265,9 @@
   <p>音程バーを見ながら歌ってみよう</p>
 </header>
 <main>
+  <div id="teacherTestBanner" class="teacher-test-banner hidden">
+    🧪 先生テストモード｜採点できますが、児童の記録・ランキング・クラスの木には保存されません。
+  </div>
   <section id="entryCard" class="card">
     <div class="grid two">
       <label>利用コード
@@ -265,6 +346,7 @@
     <div class="actions" style="margin-top:14px;justify-content:space-between">
       <div class="guide-controls">
         <label class="option-line"><input id="guideTone" type="checkbox" checked> 歌う音をガイドで流す</label>
+        <label class="option-line"><input id="metronomeMode" type="checkbox"> 曲中もメトロノームを流す</label>
         <label class="compact-label">ガイド
           <select id="guideMode">
             <option value="full" selected>音価どおり（おすすめ）</option>
@@ -282,8 +364,8 @@
     </div>
     <p class="small muted" style="margin-bottom:0">
       音声そのものは録音・保存・送信しません。送信するのは学年・組・出席番号と採点結果だけです。
-      ガイド音は、先生が入力した音価の長さだけ鳴ります。カウントは音程のないクリック音です。
-      音程は少しやさしめに判定し、自然な抑揚や声の揺れは減点しにくくしています。
+      ガイド音は、先生が入力した音価の長さだけ鳴ります。カウントと曲中メトロノームは音程のないクリック音です。
+      音程はC2付近からC7付近まで広く検出し、倍音によるオクターブ間違いを減らしています。判定は少しやさしめで、自然な抑揚や声の揺れは減点しにくくしています。
       声量は大きいほど加点されますが、無理に叫ばなくても「しっかりした声」で上限に届く設計です。
     </p>
   </section>
@@ -349,16 +431,72 @@
       <div><span class="muted">判定音符</span><strong><span id="judgedNotes">0</span>音</strong></div>
     </div>
     <div id="resultTip" class="result-tip"></div>
+    <div id="sessionProgress" class="session-progress hidden"></div>
+    <div id="newBadgeBanner" class="new-badge-banner hidden"></div>
     <div id="saveStatus" class="status muted" style="margin-top:10px">記録はまだ送信していません。</div>
     <div class="actions" style="justify-content:center;margin-top:14px">
       <button id="retryButton">もう一度うたう</button>
     </div>
   </section>
 
-  <section class="card">
-    <h2 style="margin-top:0">ランキングについて</h2>
-    <p style="margin-bottom:6px">個人ランキングと全12クラスのクラス対抗ランキングは、先生ページで確認します。</p>
-    <p class="small muted" style="margin-bottom:0">児童の成績情報を公開Webページから読み出せないようにするため、この画面には全校ランキングを表示しません。先生が必要に応じて教室で提示できます。</p>
+  <section id="badgeCard" class="card">
+    <h2 style="margin-top:0">🏅 きょうのバッジずかん</h2>
+    <p class="small muted" style="margin-top:-3px">
+      歌い方を工夫してバッジを集めよう！ バッジは他の人との順位ではなく、自分のチャレンジでゲットできます。
+    </p>
+    <div class="ranking-note">
+      安全のため、個人のバッジ履歴をサーバーから読み出しません。
+      このページを開いている間だけ、その子のバッジを覚えています。
+    </div>
+    <div id="badgeGallery" class="badge-gallery"></div>
+  </section>
+
+  <section id="classGardenCard" class="card">
+    <div style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+      <div>
+        <h2 style="margin:0">🌳 クラスの木を育てよう！</h2>
+        <p class="small muted" style="margin:5px 0 0">
+          みんながいろいろな曲にチャレンジすると、クラスの木が育ちます。
+        </p>
+      </div>
+      <button id="refreshGardenButton" type="button" class="secondary">木を更新</button>
+    </div>
+
+    <div class="ranking-note" style="margin-top:12px">
+      1人につき1曲で1ポイント。同じ曲を何回歌ってもクラスのポイントは1回分なので、
+      だれか一人がたくさん歌うより、みんなが参加するほど育ちます。
+      個人の参加状況や点数は表示しません。
+    </div>
+
+    <div class="garden-wrap">
+      <div id="gardenIcon" class="garden-icon">🌰</div>
+      <div>
+        <div id="gardenStage" class="garden-stage">まだ たね です</div>
+        <div class="garden-track"><div id="gardenFill" class="garden-fill"></div></div>
+        <div id="gardenNext" class="garden-next small muted">教材を読み込むとクラスの木が表示されます。</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="classRankingCard" class="card">
+    <div style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+      <div>
+        <h2 style="margin:0">🏆 クラスランキング</h2>
+        <p class="small muted" style="margin:5px 0 0">選んでいる曲のクラス対抗ランキングです。</p>
+      </div>
+      <button id="refreshRankingButton" type="button" class="secondary">ランキング更新</button>
+    </div>
+
+    <div class="ranking-note" style="margin-top:12px">
+      個人ランキングは先生だけが見られます。児童画面では、5人以上が参加したクラスだけを表示し、
+      クラス平均は整数で表示します。出席番号・個人点・参加人数は表示しません。
+      このランキングは練習を楽しくするためのもので、成績評価には使いません。
+    </div>
+
+    <div id="classRankingMessage" class="small muted" style="margin-top:12px">
+      教材を読み込むとランキングが表示されます。
+    </div>
+    <div id="classRankingList" class="class-ranking-list"></div>
   </section>
 </main>
 
