@@ -1,1219 +1,383 @@
-/**
- * うたってスコア！ GASバックエンド
- *
- * 【安全重視の構成】
- * - 先生画面：スプレッドシート内の専用ダイアログ（外部公開しない）
- * - 児童画面：GitHub Pages の HTTPS 静的HTML
- * - データ：このスプレッドシート
- * - 公開API：曲データ取得とスコア送信だけ。常設の利用コードが必要
- *
- * 最初に setupApp() を1回実行してください。
- */
-
-const APP = {
-  SHEETS: {
-    SONGS: 'SONGS',
-    SCORES: 'SCORES',
-    SETTINGS: 'SETTINGS',
-  },
-  HEADERS: {
-    SONGS: [
-      'songId', 'title', 'artist', 'bpm', 'countIn',
-      'backingTrackUrl', 'notesJson', 'isActive', 'updatedAt'
-    ],
-    SCORES: [
-      'scoreId', 'timestamp', 'songId', 'songTitle',
-      'grade', 'classNumber', 'className', 'attendanceNumber',
-      'pitchScore', 'rhythmScore', 'stabilityScore', 'longToneScore', 'singingScore',
-      'totalScore', 'maxCombo', 'excellentNoteCount', 'noteCount', 'rankLabel'
-    ],
-    SETTINGS: ['key', 'value'],
-  },
-  TEACHER_SESSION_SECONDS: 21600,
-  SCORE_RATE_LIMIT_SECONDS: 12,
-  MAX_SCORES_TO_ADMIN: 500,
-};
-
-/**
- * 初回セットアップ。
- * スプレッドシートに紐づけたApps Scriptで1回だけ実行します。
- */
-function setupApp() {
-  const props = PropertiesService.getScriptProperties();
-  const existingId = props.getProperty('DB_SPREADSHEET_ID');
-  let ss = null;
-
-  if (existingId) {
-    try {
-      ss = SpreadsheetApp.openById(existingId);
-    } catch (err) {
-      console.warn('既存のデータ用スプレッドシートを開けませんでした。現在のスプレッドシートを使います。');
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://script.google.com https://script.googleusercontent.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; frame-src https://script.google.com https://script.googleusercontent.com; form-action https://script.google.com https://script.googleusercontent.com; object-src 'none'; base-uri 'none';">
+  <title>うたってスコア！</title>
+  <style>
+    :root {
+      --ink: #152238;
+      --sub: #5b6678;
+      --bg: #eef4fb;
+      --card: rgba(255,255,255,.94);
+      --line: #d8e2ef;
+      --accent: #2563eb;
+      --accent2: #7c3aed;
+      --good: #0f9f6e;
+      --warn: #f59e0b;
+      --bad: #e5484d;
+      --shadow: 0 18px 45px rgba(25, 43, 75, .12);
     }
-  }
-  if (!ss) ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (!ss) throw new Error('Googleスプレッドシートから「拡張機能 → Apps Script」で開いてください。');
-
-  props.setProperty('DB_SPREADSHEET_ID', ss.getId());
-
-  const songsSheet = ensureSheet_(ss, APP.SHEETS.SONGS, APP.HEADERS.SONGS);
-  ensureScoresSheet_(ss);
-  const settingsSheet = ensureSheet_(ss, APP.SHEETS.SETTINGS, APP.HEADERS.SETTINGS);
-
-  setSettingIfMissing_(settingsSheet, 'appName', 'うたってスコア！');
-  setSettingIfMissing_(settingsSheet, 'classroomPaused', 'false');
-
-  if (songsSheet.getLastRow() === 1) {
-    songsSheet.appendRow(songToRow_(createSampleSong_()));
-  }
-
-  // 練習用のパブリックドメイン曲を、不足分だけ自動追加します。
-  ensureBuiltInPracticeSongs_(songsSheet);
-
-  // 旧版の「有効期限」だけを削除します。
-  // すでに利用コードを発行済みなら、そのコードはそのまま常設コードとして引き継ぎます。
-  props.deleteProperty('LESSON_EXPIRES_AT');
-
-  formatSheets_(ss);
-  onOpen();
-
-  const result = {
-    spreadsheetUrl: ss.getUrl(),
-    webAppUrl: ScriptApp.getService().getUrl() || 'デプロイ後にURLが表示されます',
-  };
-  console.log(JSON.stringify(result, null, 2));
-  return result;
-}
-
-function upgradeApp() {
-  return setupApp();
-}
-
-/**
- * スプレッドシートを開いたときに先生用メニューを追加します。
- * 先生ページそのものはWeb公開しません。
- */
-function onOpen() {
-  try {
-    SpreadsheetApp.getUi()
-      .createMenu('🎵 うたってスコア！')
-      .addItem('先生ページを開く', 'openTeacherPage')
-      .addToUi();
-  } catch (err) {
-    // setupApp() をエディタから実行した場合など、UIが無いときは何もしません。
-  }
-}
-
-function openTeacherPage() {
-  const token = Utilities.getUuid();
-  CacheService.getScriptCache().put(
-    'teacher:' + token,
-    '1',
-    APP.TEACHER_SESSION_SECONDS
-  );
-
-  const template = HtmlService.createTemplateFromFile('teacher');
-  template.initialTeacherToken = token;
-  const html = template.evaluate()
-    .setWidth(1180)
-    .setHeight(760);
-
-  SpreadsheetApp.getUi().showModalDialog(html, 'うたってスコア！先生ページ');
-}
-
-/**
- * 公開ウェブアプリ入口。
- * JSONPは曲データと状態確認だけに使います。
- * 個人・クラスランキングは先生ページだけで閲覧します。
- */
-function doGet(e) {
-  e = e || { parameter: {} };
-  const p = e.parameter || {};
-  const action = String(p.action || '');
-
-  if (action === 'songs') {
-    if (!isLessonCodeValid_(p.lessonCode)) {
-      return jsonp_(p.callback, {
-        ok: false,
-        message: '利用コードが違うか、先生が無効にしています。',
-      });
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 10%, #dbeafe 0, transparent 30%),
+        radial-gradient(circle at 90% 10%, #ede9fe 0, transparent 28%),
+        var(--bg);
+      font-family: "Noto Sans JP", "Yu Gothic", system-ui, sans-serif;
     }
-    return jsonp_(p.callback, {
-      ok: true,
-      songs: getPublicSongs_(),
-      appName: getSetting_('appName') || 'うたってスコア！',
-      classroomPaused: isClassroomPaused_(),
-      lessonExpiresAt: getLessonExpiresAt_(),
-    });
-  }
-
-  if (action === 'status') {
-    return jsonp_(p.callback, {
-      ok: true,
-      classroomPaused: isClassroomPaused_(),
-      lessonOpen: isLessonCodeValid_(p.lessonCode),
-      lessonExpiresAt: getLessonExpiresAt_(),
-    });
-  }
-
-  return ContentService
-    .createTextOutput('うたってスコア！公開API')
-    .setMimeType(ContentService.MimeType.TEXT);
-}
-
-/**
- * 児童画面からのスコア保存。
- * GitHub Pagesから hidden iframe の通常POSTで送信します。
- */
-function doPost(e) {
-  const p = (e && e.parameter) || {};
-  const requestId = cleanId_(p.requestId) || Utilities.getUuid();
-  try {
-    if (String(p.action || '') !== 'saveScore') {
-      throw new Error('不明な操作です。');
+    header { text-align: center; padding: 20px 16px 10px; }
+    header h1 { margin: 0; font-size: clamp(28px, 6vw, 48px); letter-spacing: .04em; }
+    header p { margin: 5px 0 0; color: var(--sub); }
+    main { width: min(1100px, calc(100% - 24px)); margin: 0 auto; padding-bottom: 50px; }
+    .card {
+      background: var(--card);
+      border: 1px solid rgba(255,255,255,.8);
+      border-radius: 22px;
+      padding: clamp(15px, 3vw, 24px);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(9px);
+      margin-bottom: 16px;
     }
-    savePublicScore_(p, requestId);
-    return postMessageResponse_({
-      source: 'utatte-score-save',
-      requestId,
-      ok: true,
-      message: 'スプレッドシートに保存しました。',
-    });
-  } catch (err) {
-    return postMessageResponse_({
-      source: 'utatte-score-save',
-      requestId,
-      ok: false,
-      message: cleanText_(err && err.message ? err.message : String(err), 160),
-    });
-  }
-}
-
-// =========================
-// 先生ページ用（スプレッドシート内だけ）
-// =========================
-
-function loginTeacher() {
-  return {
-    ok: false,
-    message: '先生ページはスプレッドシートの「🎵 うたってスコア！」メニューから開いてください。',
-  };
-}
-
-function getTeacherData(token) {
-  requireTeacher_(token);
-  const ss = getSpreadsheet_();
-
-  // 既存データは消さず、練習曲3曲が無い場合だけ追加します。
-  const songsSheet = ss.getSheetByName(APP.SHEETS.SONGS);
-  ensureBuiltInPracticeSongs_(songsSheet);
-
-  const songs = readObjects_(songsSheet)
-    .map(rowToSong_)
-    .sort((a, b) => String(a.title).localeCompare(String(b.title), 'ja'));
-
-  const scoreSheet = ensureScoresSheet_(ss);
-  const scores = readObjects_(scoreSheet)
-    .slice(-APP.MAX_SCORES_TO_ADMIN)
-    .reverse()
-    .map(scoreRowToPublic_);
-
-  return {
-    ok: true,
-    songs,
-    scores,
-    spreadsheetUrl: ss.getUrl(),
-    webAppUrl: ScriptApp.getService().getUrl() || '',
-    appName: getSetting_('appName') || 'うたってスコア！',
-    classroomPaused: isClassroomPaused_(),
-    lessonCode: getLessonCode_(),
-    lessonExpiresAt: getLessonExpiresAt_(),
-    lessonOpen: isLessonOpen_(),
-  };
-}
-
-function setClassroomPaused(token, paused) {
-  requireTeacher_(token);
-  const value = Boolean(paused);
-  setSetting_('classroomPaused', value ? 'true' : 'false');
-  return { ok: true, classroomPaused: value };
-}
-
-function issueLessonCode(token) {
-  requireTeacher_(token);
-
-  // 児童が入力しやすい「8桁の数字だけ」の常設利用コード。
-  // 文字・ハイフンは使いません。
-  const seed = Utilities.getUuid() + ':' + Date.now() + ':' + Math.random();
-  const digest = Utilities.computeDigest(
-    Utilities.DigestAlgorithm.SHA_256,
-    seed,
-    Utilities.Charset.UTF_8
-  );
-
-  let value = 0;
-  for (let i = 0; i < 8; i++) {
-    value = (value * 256 + (digest[i] & 0xff)) % 100000000;
-  }
-  const code = String(value).padStart(8, '0');
-
-  const props = PropertiesService.getScriptProperties();
-  props.setProperty('LESSON_CODE', code);
-  props.deleteProperty('LESSON_EXPIRES_AT');
-
-  return {
-    ok: true,
-    lessonCode: code,
-    lessonExpiresAt: '',
-    persistent: true,
-  };
-}
-
-function closeLesson(token) {
-  requireTeacher_(token);
-  const props = PropertiesService.getScriptProperties();
-  props.deleteProperty('LESSON_CODE');
-  props.deleteProperty('LESSON_EXPIRES_AT');
-  return { ok: true };
-}
-
-function saveSong(token, payload) {
-  requireTeacher_(token);
-  payload = payload || {};
-
-  const notes = normalizeNotes_(payload.notes);
-  if (!notes.length) {
-    throw new Error('音符データを1音以上入力してください。');
-  }
-  if (!notes.some(note => note.midi != null)) {
-    throw new Error('音程のある音符を1音以上入力してください。');
-  }
-
-  const song = {
-    songId: cleanId_(payload.songId) || Utilities.getUuid().slice(0, 8),
-    title: cleanText_(payload.title, 80),
-    artist: cleanText_(payload.artist, 80),
-    bpm: clampNumber_(payload.bpm, 30, 300, 100),
-    countIn: Math.round(clampNumber_(payload.countIn, 0, 8, 4)),
-    backingTrackUrl: cleanUrl_(payload.backingTrackUrl),
-    notes,
-    isActive: payload.isActive !== false,
-    updatedAt: new Date(),
-  };
-
-  if (!song.title) {
-    throw new Error('曲名を入力してください。');
-  }
-
-  const sheet = getSpreadsheet_().getSheetByName(APP.SHEETS.SONGS);
-  const values = sheet.getDataRange().getValues();
-  const idCol = APP.HEADERS.SONGS.indexOf('songId');
-  let rowNumber = -1;
-
-  for (let i = 1; i < values.length; i++) {
-    if (String(values[i][idCol]) === song.songId) {
-      rowNumber = i + 1;
-      break;
+    .grid { display: grid; gap: 12px; }
+    .grid.four { grid-template-columns: .75fr .75fr .9fr 1.6fr; }
+    label { display: grid; gap: 6px; font-weight: 800; font-size: 14px; }
+    input, select, button { font: inherit; }
+    input, select {
+      width: 100%; padding: 12px 13px; border: 1px solid #b8c5d6;
+      border-radius: 12px; background: white; color: var(--ink);
     }
-  }
-
-  const row = songToRow_(song);
-  if (rowNumber > 0) {
-    sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
-  } else {
-    sheet.appendRow(row);
-  }
-
-  return { ok: true, song: rowToSong_(objectFromRow_(APP.HEADERS.SONGS, row)) };
-}
-
-function setSongActive(token, songId, isActive) {
-  requireTeacher_(token);
-  const sheet = getSpreadsheet_().getSheetByName(APP.SHEETS.SONGS);
-  const values = sheet.getDataRange().getValues();
-  const idCol = APP.HEADERS.SONGS.indexOf('songId');
-  const activeCol = APP.HEADERS.SONGS.indexOf('isActive');
-  const updatedCol = APP.HEADERS.SONGS.indexOf('updatedAt');
-
-  for (let i = 1; i < values.length; i++) {
-    if (String(values[i][idCol]) === String(songId)) {
-      sheet.getRange(i + 1, activeCol + 1).setValue(Boolean(isActive));
-      sheet.getRange(i + 1, updatedCol + 1).setValue(new Date());
-      return { ok: true };
+    button {
+      border: 0; border-radius: 14px; padding: 13px 20px;
+      font-weight: 900; cursor: pointer; color: white;
+      background: linear-gradient(120deg, var(--accent), var(--accent2));
+      box-shadow: 0 8px 18px rgba(37, 99, 235, .22);
     }
-  }
-  throw new Error('対象の曲が見つかりません。');
-}
-
-function resetScoresForSong(token, songId) {
-  requireTeacher_(token);
-  const ss = getSpreadsheet_();
-  const sheet = ensureScoresSheet_(ss);
-  const values = sheet.getDataRange().getValues();
-  if (values.length <= 1) return { ok: true, deleted: 0 };
-
-  const idCol = APP.HEADERS.SCORES.indexOf('songId');
-  const keep = [values[0]];
-  let deleted = 0;
-
-  for (let i = 1; i < values.length; i++) {
-    if (String(values[i][idCol]) === String(songId)) {
-      deleted++;
-    } else {
-      keep.push(values[i]);
+    button.secondary { color: var(--ink); background: #edf2f8; box-shadow: none; }
+    button:disabled { opacity: .5; cursor: wait; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .muted { color: var(--sub); }
+    .small { font-size: 13px; }
+    .hidden { display: none !important; }
+    .setup { border: 2px dashed #f59e0b; background: #fffbeb; }
+    .stage { padding: 12px; overflow: hidden; }
+    canvas {
+      width: 100%; height: clamp(250px, 46vh, 430px); display: block;
+      background: linear-gradient(#14213a, #0c1527); border-radius: 18px;
     }
-  }
-
-  sheet.clearContents();
-  sheet.getRange(1, 1, keep.length, keep[0].length).setValues(keep);
-  sheet.setFrozenRows(1);
-  return { ok: true, deleted };
-}
-
-function getSchoolRankingsForTeacher(token, songId) {
-  requireTeacher_(token);
-  const rankingData = getRankingData_(String(songId || ''));
-  return {
-    ok: true,
-    individualRanking: rankingData.individualRanking,
-    classRanking: rankingData.classRanking,
-    rule: '個人は3〜6年生全員の自己ベスト、クラス対抗は全12クラスを参加児童の自己ベスト平均で比べます。',
-  };
-}
-
-/**
- * 旧版の先生ページとの互換用です。gradeは使用せず、全学年を返します。
- */
-function getClassRankingForTeacher(token, songId, grade) {
-  requireTeacher_(token);
-  return {
-    ok: true,
-    ranking: getClassRanking_(String(songId || '')),
-    rule: '全12クラスを、参加児童の自己ベスト平均で比べます。',
-  };
-}
-
-function changeTeacherPin() {
-  throw new Error('この安全版では先生PINを使用しません。先生ページはスプレッドシートからだけ開きます。');
-}
-
-// =========================
-// 公開データ・ランキング
-// =========================
-
-function getPublicSongs_() {
-  const sheet = getSpreadsheet_().getSheetByName(APP.SHEETS.SONGS);
-  return readObjects_(sheet)
-    .map(rowToSong_)
-    .filter(song => song.isActive)
-    .map(song => ({
-      songId: song.songId,
-      title: song.title,
-      artist: song.artist,
-      bpm: song.bpm,
-      countIn: song.countIn,
-      notes: song.notes,
-    }))
-    .sort((a, b) => String(a.title).localeCompare(String(b.title), 'ja'));
-}
-
-function getRankingData_(songId) {
-  return {
-    individualRanking: getIndividualRanking_(songId),
-    classRanking: getClassRanking_(songId),
-  };
-}
-
-function getIndividualRanking_(songId) {
-  if (!songId) return [];
-  const sheet = ensureScoresSheet_(getSpreadsheet_());
-  const rows = readObjects_(sheet)
-    .filter(row => String(row.songId) === String(songId))
-    .map(scoreRowToPublic_)
-    .filter(row => row.grade >= 3 && row.grade <= 6)
-    .filter(row => row.classNumber >= 1 && row.classNumber <= 3)
-    .filter(row => row.attendanceNumber >= 1 && row.attendanceNumber <= 35);
-
-  const bestByStudent = {};
-  rows.forEach(row => {
-    const studentKey = makeStudentKey_(row);
-    const current = bestByStudent[studentKey];
-    if (!current || isBetterScore_(row, current)) bestByStudent[studentKey] = row;
-  });
-
-  return Object.values(bestByStudent)
-    .sort(compareScores_)
-    .slice(0, 20)
-    .map((row, index) => Object.assign({ rank: index + 1 }, row));
-}
-
-function getClassRanking_(songId) {
-  if (!songId) return [];
-  const sheet = ensureScoresSheet_(getSpreadsheet_());
-  const rows = readObjects_(sheet)
-    .filter(row => String(row.songId) === String(songId))
-    .map(scoreRowToPublic_)
-    .filter(row => row.grade >= 3 && row.grade <= 6)
-    .filter(row => row.classNumber >= 1 && row.classNumber <= 3)
-    .filter(row => row.attendanceNumber >= 1 && row.attendanceNumber <= 35);
-
-  const bestByStudent = {};
-  rows.forEach(row => {
-    const studentKey = makeStudentKey_(row);
-    const current = bestByStudent[studentKey];
-    if (!current || isBetterScore_(row, current)) bestByStudent[studentKey] = row;
-  });
-
-  const classes = {};
-  for (let grade = 3; grade <= 6; grade++) {
-    for (let classNumber = 1; classNumber <= 3; classNumber++) {
-      const className = grade + '年' + classNumber + '組';
-      classes[className] = {
-        className,
-        grade,
-        classNumber,
-        participantCount: 0,
-        totalSum: 0,
-        pitchSum: 0,
-        rhythmSum: 0,
-        stabilitySum: 0,
-        longToneSum: 0,
-        singingSum: 0,
-      };
+    .lyrics { text-align: center; min-height: 102px; padding: 12px 6px 2px; }
+    #currentLyric { font-size: clamp(30px, 7vw, 60px); font-weight: 950; letter-spacing: .1em; }
+    #nextLyric { color: var(--sub); font-size: clamp(17px, 3vw, 23px); margin-top: 6px; }
+    .hud {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-top: 10px;
     }
-  }
-
-  Object.values(bestByStudent).forEach(row => {
-    const group = classes[row.className];
-    group.participantCount++;
-    group.totalSum += row.totalScore;
-    group.pitchSum += row.pitchScore;
-    group.rhythmSum += row.rhythmScore;
-    group.stabilitySum += row.stabilityScore;
-    group.longToneSum += row.longToneScore;
-    group.singingSum += row.singingScore;
-  });
-
-  let rankedCount = 0;
-  return Object.values(classes)
-    .map(group => ({
-      className: group.className,
-      grade: group.grade,
-      classNumber: group.classNumber,
-      participantCount: group.participantCount,
-      averageScore: group.participantCount ? round1_(group.totalSum / group.participantCount) : null,
-      averagePitchScore: group.participantCount ? round1_(group.pitchSum / group.participantCount) : null,
-      averageRhythmScore: group.participantCount ? round1_(group.rhythmSum / group.participantCount) : null,
-      averageStabilityScore: group.participantCount ? round1_(group.stabilitySum / group.participantCount) : null,
-      averageLongToneScore: group.participantCount ? round1_(group.longToneSum / group.participantCount) : null,
-      averageSingingScore: group.participantCount ? round1_(group.singingSum / group.participantCount) : null,
-    }))
-    .sort((a, b) =>
-      Number(b.participantCount > 0) - Number(a.participantCount > 0) ||
-      Number(b.averageScore || 0) - Number(a.averageScore || 0) ||
-      b.participantCount - a.participantCount ||
-      a.grade - b.grade ||
-      a.classNumber - b.classNumber
-    )
-    .map(row => Object.assign({
-      rank: row.participantCount ? ++rankedCount : 0
-    }, row));
-}
-
-function savePublicScore_(p, requestId) {
-  if (isClassroomPaused_()) {
-    throw new Error('先生が現在、記録受付を停止しています。');
-  }
-  if (!isLessonCodeValid_(p.lessonCode)) {
-    throw new Error('利用コードが違うか、先生が無効にしています。');
-  }
-
-  const songId = cleanId_(p.songId);
-  const song = getPublicSongs_().find(s => s.songId === songId);
-  if (!song) throw new Error('曲が見つかりません。');
-
-  const grade = toIntegerInRange_(p.grade, 3, 6, '学年');
-  const classNumber = toIntegerInRange_(p.classNumber, 1, 3, '組');
-  const attendanceNumber = toIntegerInRange_(p.attendanceNumber, 1, 35, '出席番号');
-  const className = grade + '年' + classNumber + '組';
-
-  const pitchScore = toScore1_(p.pitchScore);
-  const rhythmScore = toScore1_(p.rhythmScore);
-  const stabilityScore = toScore1_(p.stabilityScore);
-  const longToneScore = toScore1_(p.longToneScore);
-  const singingScore = toScore1_(p.singingScore);
-  const totalScore = toScore1_(p.totalScore);
-  const maxCombo = toIntegerRangeOrZero_(p.maxCombo, 0, 9999);
-  const excellentNoteCount = toIntegerRangeOrZero_(p.excellentNoteCount, 0, 9999);
-  const noteCount = toIntegerRangeOrZero_(p.noteCount, 0, 9999);
-
-  const expectedNoteCount = (song.notes || []).filter(note => note.midi != null).length;
-  if (noteCount !== expectedNoteCount) {
-    throw new Error('判定音符数が曲データと一致しません。');
-  }
-  if (maxCombo > noteCount || excellentNoteCount > noteCount) {
-    throw new Error('採点データの形式が正しくありません。');
-  }
-
-  const expectedTotal = round1_(
-    pitchScore * 0.35 +
-    rhythmScore * 0.20 +
-    stabilityScore * 0.10 +
-    longToneScore * 0.10 +
-    singingScore * 0.25
-  );
-  if (Math.abs(expectedTotal - totalScore) > 0.25) {
-    throw new Error('総合点の計算が一致しません。');
-  }
-
-  const cache = CacheService.getScriptCache();
-  const cleanRequestId = cleanId_(requestId);
-  if (cleanRequestId && cache.get('score-request:' + cleanRequestId)) {
-    throw new Error('同じ記録がすでに送信されています。');
-  }
-
-  const rateKey = [
-    'score-rate',
-    grade,
-    classNumber,
-    attendanceNumber,
-    songId
-  ].join(':');
-  if (cache.get(rateKey)) {
-    throw new Error('連続送信が早すぎます。少し待ってからもう一度試してください。');
-  }
-
-  const lock = LockService.getScriptLock();
-  lock.waitLock(10000);
-  try {
-    const minuteKey = 'score-global:' + Math.floor(Date.now() / 60000);
-    const currentMinuteCount = Number(cache.get(minuteKey) || 0);
-    if (currentMinuteCount >= 200) {
-      throw new Error('現在アクセスが集中しています。少し待ってからもう一度試してください。');
+    .hud > div { background: #f6f8fb; border: 1px solid var(--line); border-radius: 13px; padding: 10px; text-align: center; }
+    .hud strong { display: block; font-size: clamp(20px, 4vw, 32px); }
+    .meter { height: 10px; background: #dfe7f1; border-radius: 999px; overflow: hidden; }
+    #meterFill { height: 100%; width: 0; background: linear-gradient(90deg, var(--good), var(--warn), var(--bad)); transition: width .08s linear; }
+    .status { text-align: center; font-weight: 900; min-height: 28px; margin: 8px 0; }
+    .countdown {
+      position: fixed; inset: 0; display: grid; place-items: center;
+      padding: 18px; text-align: center;
+      background: rgba(8, 15, 30, .68); color: white; z-index: 20;
+      font-weight: 950; backdrop-filter: blur(7px);
     }
-    cache.put(minuteKey, String(currentMinuteCount + 1), 120);
-
-    const ss = getSpreadsheet_();
-    const sheet = ensureScoresSheet_(ss);
-    appendObjectRow_(sheet, APP.HEADERS.SCORES, {
-      scoreId: cleanRequestId || Utilities.getUuid(),
-      timestamp: new Date(),
-      songId,
-      songTitle: song.title,
-      grade,
-      classNumber,
-      className,
-      attendanceNumber,
-      pitchScore,
-      rhythmScore,
-      stabilityScore,
-      longToneScore,
-      singingScore,
-      totalScore,
-      maxCombo,
-      excellentNoteCount,
-      noteCount,
-      rankLabel: scoreRankLabel_(totalScore),
-    });
-    if (cleanRequestId) cache.put('score-request:' + cleanRequestId, '1', 600);
-    cache.put(rateKey, '1', APP.SCORE_RATE_LIMIT_SECONDS);
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-function isClassroomPaused_() {
-  return String(getSetting_('classroomPaused') || 'false').toLowerCase() === 'true';
-}
-
-function getLessonCode_() {
-  return String(PropertiesService.getScriptProperties().getProperty('LESSON_CODE') || '');
-}
-
-function getLessonExpiresAt_() {
-  // 旧版との互換用。常設利用コード版では有効期限を使いません。
-  return '';
-}
-
-function isLessonOpen_() {
-  // 利用コードが存在する限り、先生が無効化・再発行するまで有効です。
-  return Boolean(getLessonCode_());
-}
-
-function normalizeLessonCode_(value) {
-  // 利用コードは数字8桁のみ。空白やハイフン等が入っても数字だけに直します。
-  return String(value || '').replace(/\D/g, '').slice(0, 8);
-}
-
-function isLessonCodeValid_(value) {
-  if (!isLessonOpen_()) return false;
-  const expected = normalizeLessonCode_(getLessonCode_());
-  const actual = normalizeLessonCode_(value);
-  return Boolean(actual) && actual === expected;
-}
-
-function postMessageResponse_(payload) {
-  const safeJson = JSON.stringify(payload)
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026');
-  return HtmlService.createHtmlOutput(
-    '<!doctype html><meta charset="utf-8">' +
-    '<script>window.top.postMessage(' + safeJson + ', "*");</script>'
-  );
-}
-
-// =========================
-// 内部ユーティリティ
-// =========================
-
-function getSpreadsheet_() {
-  const id = PropertiesService.getScriptProperties().getProperty('DB_SPREADSHEET_ID');
-  if (!id) {
-    throw new Error('先に setupApp() を実行してください。');
-  }
-  return SpreadsheetApp.openById(id);
-}
-
-function ensureSheet_(ss, name, headers) {
-  let sheet = ss.getSheetByName(name);
-  if (!sheet) sheet = ss.insertSheet(name);
-
-  if (sheet.getLastRow() === 0) {
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  } else {
-    const current = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-    if (current.join('\t') !== headers.join('\t')) {
-      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    .countdown-panel {
+      width: min(680px, 94vw); padding: clamp(24px, 5vw, 48px);
+      border: 2px solid rgba(255,255,255,.35); border-radius: 30px;
+      background: rgba(14, 28, 51, .9); box-shadow: 0 28px 70px rgba(0,0,0,.35);
     }
-  }
-  sheet.setFrozenRows(1);
-  return sheet;
-}
-
-
-function ensureScoresSheet_(ss) {
-  let sheet = ss.getSheetByName(APP.SHEETS.SCORES);
-  if (!sheet) sheet = ss.insertSheet(APP.SHEETS.SCORES);
-
-  if (sheet.getLastRow() === 0) {
-    sheet.getRange(1, 1, 1, APP.HEADERS.SCORES.length)
-      .setValues([APP.HEADERS.SCORES]);
-    sheet.setFrozenRows(1);
-    return sheet;
-  }
-
-  const values = sheet.getDataRange().getValues();
-  const currentHeaders = values[0].map(value => String(value || '').trim());
-  const alreadyCurrent = currentHeaders.length === APP.HEADERS.SCORES.length &&
-    currentHeaders.every((header, index) => header === APP.HEADERS.SCORES[index]);
-
-  if (alreadyCurrent) {
-    sheet.setFrozenRows(1);
-    return sheet;
-  }
-
-  const migratedRows = values.slice(1)
-    .filter(row => row.some(value => value !== '' && value != null))
-    .map(row => {
-      const old = objectFromRow_(currentHeaders, row);
-      const classInfo = parseClassName_(old.className);
-      const grade = validIntegerOrBlank_(old.grade, 3, 6) || classInfo.grade || '';
-      const classNumber = validIntegerOrBlank_(old.classNumber, 1, 3) || classInfo.classNumber || '';
-      const attendanceNumber =
-        validIntegerOrBlank_(old.attendanceNumber, 1, 35) ||
-        parseAttendanceNumber_(old.playerName) ||
-        '';
-      const className = grade && classNumber
-        ? grade + '年' + classNumber + '組'
-        : cleanText_(old.className, 40);
-      const migrated = {
-        scoreId: cleanId_(old.scoreId) || Utilities.getUuid(),
-        timestamp: old.timestamp || '',
-        songId: old.songId || '',
-        songTitle: old.songTitle || '',
-        grade,
-        classNumber,
-        className,
-        attendanceNumber,
-        pitchScore: old.pitchScore ?? '',
-        rhythmScore: old.rhythmScore ?? '',
-        stabilityScore: old.stabilityScore ?? old.pitchScore ?? '',
-        longToneScore: old.longToneScore ?? old.rhythmScore ?? '',
-        singingScore: old.singingScore ?? old.rhythmScore ?? '',
-        totalScore: old.totalScore ?? '',
-        maxCombo: old.maxCombo ?? '',
-        excellentNoteCount: old.excellentNoteCount ?? '',
-        noteCount: old.noteCount ?? '',
-        rankLabel: old.rankLabel || '',
-      };
-      return APP.HEADERS.SCORES.map(header => migrated[header] ?? '');
-    });
-
-  sheet.clearContents();
-  const output = [APP.HEADERS.SCORES].concat(migratedRows);
-  sheet.getRange(1, 1, output.length, APP.HEADERS.SCORES.length).setValues(output);
-  sheet.setFrozenRows(1);
-  return sheet;
-}
-
-function appendObjectRow_(sheet, headers, object) {
-  sheet.appendRow(headers.map(header => object[header] ?? ''));
-}
-
-function scoreRowToPublic_(row) {
-  const classInfo = parseClassName_(row.className);
-  const grade = validIntegerOrBlank_(row.grade, 3, 6) || classInfo.grade || 0;
-  const classNumber = validIntegerOrBlank_(row.classNumber, 1, 3) || classInfo.classNumber || 0;
-  const attendanceNumber =
-    validIntegerOrBlank_(row.attendanceNumber, 1, 35) ||
-    parseAttendanceNumber_(row.playerName) ||
-    0;
-  const className = grade && classNumber
-    ? grade + '年' + classNumber + '組'
-    : cleanText_(row.className, 40);
-
-  return {
-    scoreId: cleanId_(row.scoreId),
-    timestamp: dateToIso_(row.timestamp),
-    songId: String(row.songId || ''),
-    songTitle: String(row.songTitle || ''),
-    grade,
-    classNumber,
-    className,
-    attendanceNumber,
-    pitchScore: toScore1_(row.pitchScore),
-    rhythmScore: toScore1_(row.rhythmScore),
-    stabilityScore: toScore1_(
-      row.stabilityScore === '' || row.stabilityScore == null
-        ? row.pitchScore
-        : row.stabilityScore
-    ),
-    longToneScore: toScore1_(
-      row.longToneScore === '' || row.longToneScore == null
-        ? row.rhythmScore
-        : row.longToneScore
-    ),
-    singingScore: toScore1_(
-      row.singingScore === '' || row.singingScore == null
-        ? row.rhythmScore
-        : row.singingScore
-    ),
-    totalScore: toScore1_(row.totalScore),
-    maxCombo: Number(row.maxCombo || 0),
-    excellentNoteCount: Number(row.excellentNoteCount || 0),
-    noteCount: Number(row.noteCount || 0),
-    rankLabel: cleanText_(row.rankLabel, 8) || scoreRankLabel_(toScore1_(row.totalScore)),
-  };
-}
-
-function parseClassName_(value) {
-  const match = String(value || '').match(/([3-6])\s*年\s*([1-3])\s*組/);
-  return match
-    ? { grade: Number(match[1]), classNumber: Number(match[2]) }
-    : { grade: 0, classNumber: 0 };
-}
-
-function parseAttendanceNumber_(value) {
-  const match = String(value || '').match(/(?:^|\D)([1-9]|[12]\d|3[0-5])(?:\s*番)?(?:\D|$)/);
-  return match ? Number(match[1]) : 0;
-}
-
-function validIntegerOrBlank_(value, min, max) {
-  const n = Number(value);
-  return Number.isInteger(n) && n >= min && n <= max ? n : 0;
-}
-
-function toIntegerInRange_(value, min, max, label) {
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < min || n > max) {
-    throw new Error(label + 'を正しく選んでください。');
-  }
-  return n;
-}
-
-function toIntegerRangeOrZero_(value, min, max) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(min, Math.min(max, Math.round(n)));
-}
-
-function makeStudentKey_(row) {
-  return [
-    row.grade || '',
-    row.classNumber || '',
-    row.attendanceNumber || row.playerName || '',
-  ].join('|');
-}
-
-function isBetterScore_(candidate, current) {
-  return compareScores_(candidate, current) < 0;
-}
-
-function compareScores_(a, b) {
-  return b.totalScore - a.totalScore ||
-    b.pitchScore - a.pitchScore ||
-    b.rhythmScore - a.rhythmScore ||
-    String(a.timestamp).localeCompare(String(b.timestamp));
-}
-
-function round1_(value) {
-  return Math.round(Number(value) * 10) / 10;
-}
-
-function formatSheets_(ss) {
-  Object.values(APP.SHEETS).forEach(name => {
-    const sheet = ss.getSheetByName(name);
-    if (!sheet) return;
-    const lastCol = Math.max(1, sheet.getLastColumn());
-    sheet.getRange(1, 1, 1, lastCol)
-      .setFontWeight('bold')
-      .setBackground('#dbeafe');
-    sheet.autoResizeColumns(1, lastCol);
-  });
-}
-
-function readObjects_(sheet) {
-  if (!sheet || sheet.getLastRow() < 2) return [];
-  const values = sheet.getDataRange().getValues();
-  const headers = values[0].map(String);
-  return values.slice(1).map(row => objectFromRow_(headers, row));
-}
-
-function objectFromRow_(headers, row) {
-  const obj = {};
-  headers.forEach((header, index) => obj[header] = row[index]);
-  return obj;
-}
-
-function songToRow_(song) {
-  return [
-    song.songId,
-    song.title,
-    song.artist || '',
-    song.bpm,
-    song.countIn,
-    song.backingTrackUrl || '',
-    JSON.stringify(song.notes || []),
-    Boolean(song.isActive),
-    song.updatedAt || new Date(),
-  ];
-}
-
-function rowToSong_(row) {
-  let notes = [];
-  try {
-    notes = JSON.parse(String(row.notesJson || '[]'));
-  } catch (err) {
-    notes = [];
-  }
-  return {
-    songId: String(row.songId || ''),
-    title: String(row.title || ''),
-    artist: String(row.artist || ''),
-    bpm: Number(row.bpm || 100),
-    countIn: Number(row.countIn ?? 4),
-    backingTrackUrl: String(row.backingTrackUrl || ''),
-    notes: normalizeNotes_(notes),
-    isActive: row.isActive === true || String(row.isActive).toLowerCase() === 'true',
-    updatedAt: dateToIso_(row.updatedAt),
-  };
-}
-
-function normalizeNotes_(notes) {
-  if (!Array.isArray(notes)) return [];
-  const normalized = notes.map(note => {
-    const start = clampNumber_(note.start, 0, 3600, 0);
-    const duration = clampNumber_(note.duration, 0.05, 60, 0.5);
-    const rawMidi = note.midi;
-    const midi = rawMidi === null || rawMidi === '' || rawMidi === undefined
-      ? null
-      : Math.round(clampNumber_(rawMidi, 24, 108, 60));
-    return {
-      start: round3_(start),
-      duration: round3_(duration),
-      midi,
-      lyric: cleanText_(note.lyric, 30),
-    };
-  });
-
-  normalized.sort((a, b) => a.start - b.start);
-  return normalized.slice(0, 3000);
-}
-
-function jsonp_(callback, payload) {
-  const cb = String(callback || 'callback');
-  if (!/^[A-Za-z_$][0-9A-Za-z_$.]*$/.test(cb)) {
-    return ContentService
-      .createTextOutput('throw new Error("Invalid callback");')
-      .setMimeType(ContentService.MimeType.JAVASCRIPT);
-  }
-
-  const safeJson = JSON.stringify(payload)
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026');
-
-  return ContentService
-    .createTextOutput(cb + '(' + safeJson + ');')
-    .setMimeType(ContentService.MimeType.JAVASCRIPT);
-}
-
-function requireTeacher_(token) {
-  const key = 'teacher:' + String(token || '');
-  if (!CacheService.getScriptCache().get(key)) {
-    throw new Error('先生ページの有効期限が切れました。スプレッドシートのメニューから開き直してください。');
-  }
-  CacheService.getScriptCache().put(key, '1', APP.TEACHER_SESSION_SECONDS);
-}
-
-function getSetting_(key) {
-  const sheet = getSpreadsheet_().getSheetByName(APP.SHEETS.SETTINGS);
-  const rows = readObjects_(sheet);
-  const found = rows.find(row => String(row.key) === String(key));
-  return found ? found.value : '';
-}
-
-function setSettingIfMissing_(sheet, key, value) {
-  const rows = readObjects_(sheet);
-  if (!rows.some(row => String(row.key) === String(key))) {
-    sheet.appendRow([key, value]);
-  }
-}
-
-function setSetting_(key, value) {
-  const sheet = getSpreadsheet_().getSheetByName(APP.SHEETS.SETTINGS);
-  const values = sheet.getDataRange().getValues();
-  for (let i = 1; i < values.length; i++) {
-    if (String(values[i][0]) === String(key)) {
-      sheet.getRange(i + 1, 2).setValue(value);
-      return;
+    .countdown-label { font-size: clamp(20px, 4vw, 34px); letter-spacing: .08em; color: #bfdbfe; }
+    .countdown-main { margin: 8px 0; font-size: clamp(76px, 22vw, 180px); line-height: 1; }
+    .countdown-main.note-name { font-size: clamp(64px, 18vw, 145px); }
+    .countdown-sub { min-height: 34px; font-size: clamp(18px, 3.2vw, 27px); color: #e2e8f0; }
+    .countdown-beats { display: flex; justify-content: center; gap: 10px; min-height: 50px; margin-top: 18px; }
+    .countdown-beats span {
+      display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%;
+      color: #cbd5e1; background: rgba(255,255,255,.12); font-size: 20px;
     }
-  }
-  sheet.appendRow([key, value]);
-}
-
-
-function ensureBuiltInPracticeSongs_(sheet) {
-  if (!sheet) return;
-
-  const values = sheet.getDataRange().getValues();
-  const idCol = APP.HEADERS.SONGS.indexOf('songId');
-  const existingIds = new Set(
-    values.slice(1).map(row => String(row[idCol] || ''))
-  );
-
-  createBuiltInPracticeSongs_().forEach(song => {
-    if (!existingIds.has(song.songId)) {
-      sheet.appendRow(songToRow_(song));
-      existingIds.add(song.songId);
+    .countdown-beats span.done { color: #dbeafe; background: rgba(96,165,250,.38); }
+    .countdown-beats span.active { color: #172033; background: #fbbf24; transform: scale(1.14); }
+    .result-hero {
+      display: grid; grid-template-columns: minmax(210px, .8fr) 1.2fr;
+      gap: clamp(18px, 4vw, 38px); align-items: center;
     }
-  });
-}
+    .score-ring {
+      --score-angle: 0deg;
+      width: min(245px, 62vw); aspect-ratio: 1; margin: 0 auto;
+      display: grid; place-items: center; border-radius: 50%;
+      background: conic-gradient(var(--accent2) var(--score-angle), #e4eaf3 0);
+      box-shadow: 0 18px 42px rgba(37, 99, 235, .18);
+      position: relative;
+    }
+    .score-ring::before {
+      content: ""; position: absolute; inset: 16px; border-radius: 50%;
+      background: white; box-shadow: inset 0 0 0 1px var(--line);
+    }
+    .score-ring-content { position: relative; z-index: 1; text-align: center; }
+    .result-score { font-size: clamp(56px, 12vw, 92px); font-weight: 950; line-height: .95; }
+    .result-score-unit { font-size: 17px; font-weight: 900; color: var(--sub); }
+    .rank-badge {
+      display: inline-grid; place-items: center; min-width: 74px; height: 74px;
+      padding: 0 14px; border-radius: 22px; font-size: 34px; font-weight: 950;
+      color: white; background: linear-gradient(135deg, var(--accent), var(--accent2));
+      box-shadow: 0 12px 25px rgba(124, 58, 237, .25);
+    }
+    .result-title { margin: 12px 0 4px; font-size: clamp(25px, 5vw, 38px); }
+    .result-comment { margin: 0; font-size: clamp(17px, 3vw, 21px); font-weight: 850; }
+    .detail-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 20px 0 12px; }
+    .detail-score { padding: 13px; border: 1px solid var(--line); border-radius: 15px; background: #f8fafc; }
+    .detail-score-head { display: flex; justify-content: space-between; gap: 8px; font-weight: 900; }
+    .detail-score strong { font-size: 22px; }
+    .score-bar { height: 9px; margin-top: 9px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+    .score-bar span { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .8s ease; }
+    .result-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
+    .result-stats > div { text-align: center; padding: 13px; border-radius: 15px; background: #f5f7fb; }
+    .result-stats strong { display: block; font-size: 27px; }
+    .result-tip { padding: 14px 16px; border-radius: 15px; background: #eff6ff; border: 1px solid #bfdbfe; font-weight: 850; }
+    .ranking { display: grid; gap: 8px; }
+    .ranking-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .ranking-box { padding: 14px; border: 1px solid var(--line); border-radius: 17px; background: #f8fafc; }
+    .ranking-box h3 { margin: 0 0 10px; }
+    .rank-row {
+      display: grid; grid-template-columns: 54px 1fr auto; align-items: center;
+      gap: 8px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 13px; background: white;
+    }
+    .rank-num { font-size: 23px; font-weight: 950; text-align: center; }
+    .rank-score { font-size: 24px; font-weight: 950; }
+    .option-line { display:flex;align-items:center;gap:8px;font-weight:800; }
+    .option-line input { width:auto; }
+    .guide-controls {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px;
+      background: #f8fafc;
+    }
+    .guide-controls .compact-label {
+      display: flex; grid-template-columns: none; align-items: center; gap: 7px;
+      font-size: 13px; white-space: nowrap;
+    }
+    .guide-controls select { width: auto; min-width: 170px; padding: 8px 10px; }
+    .guide-volume { display: flex; align-items: center; gap: 7px; min-width: 190px; }
+    .guide-volume input { width: 120px; padding: 0; }
+    .guide-volume output { min-width: 2em; text-align: center; font-weight: 950; }
+    .classroom-pause {
+      position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center;
+      padding: 24px; color: white; background: rgba(15, 23, 42, .90); text-align: center;
+    }
+    .classroom-pause .panel { max-width: 620px; padding: 28px; border: 1px solid rgba(255,255,255,.25); border-radius: 24px; background: rgba(30,41,59,.95); }
+    .classroom-pause h2 { margin: 0 0 10px; font-size: clamp(28px, 6vw, 48px); }
+    @media (max-width: 720px) {
+      .grid.four { grid-template-columns: 1fr 1fr; }
+      .ranking-grid { grid-template-columns: 1fr; }
+      .hud { grid-template-columns: repeat(2, 1fr); }
+      .result-hero { grid-template-columns: 1fr; text-align: center; }
+      .detail-grid { grid-template-columns: 1fr 1fr; }
+      .result-stats { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1 id="appTitle">うたってスコア！</h1>
+  <p>音程バーを見ながら歌ってみよう</p>
+</header>
+<main>
+  <section id="entryCard" class="card">
+    <div class="grid two">
+      <label>利用コード
+        <input id="lessonCode" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" placeholder="8桁の数字">
+      </label>
+      <div style="align-self:end">
+        <div class="actions">
+          <button id="loadLessonButton" >教材を読み込む</button>
+          <span id="lessonMessage" class="small muted"></span><span id="jsStatus" class="small muted">ページ準備中…</span>
+        </div>
+      </div>
+    </div>
 
-function createBuiltInPracticeSongs_() {
-  return [
-    makePracticeSong_(
-      'practice_choucho',
-      'ちょうちょう（練習用・1番）',
-      '唱歌／パブリックドメイン',
-      112,
-      4,
-      [
-        // 1-2小節
-        [67,1,'ちょうちょう　ちょうちょう'], [64,1,''], [64,2,''],
-        [65,1,''], [62,1,''], [62,2,''],
-        // 3-4小節
-        [60,1,'なのはにとまれ'], [62,1,''], [64,1,''], [65,1,''],
-        [67,1,''], [67,1,''], [67,2,''],
-        // 5-6小節
-        [67,1,'なのはにあいたら'], [64,1,''], [64,1,''], [64,1,''],
-        [65,1,''], [62,1,''], [62,1,''], [62,1,''],
-        // 7-8小節
-        [60,1,'さくらにとまれ'], [64,1,''], [67,1,''], [67,1,''],
-        [64,1,''], [64,1,''], [64,2,''],
-        // 9-10小節
-        [62,1,'さくらのはなの'], [62,1,''], [62,1,''], [62,1,''],
-        [62,1,''], [64,1,''], [65,2,''],
-        // 11-12小節
-        [64,1,'はなからはなへ'], [64,1,''], [64,1,''], [64,1,''],
-        [64,1,''], [65,1,''], [67,2,''],
-        // 13-14小節
-        [67,1,'とまれよ　あそべ'], [64,1,''], [64,1,''], [64,1,''],
-        [65,1,''], [62,1,''], [62,1,''], [62,1,''],
-        // 15-16小節
-        [60,1,'あそべよ　とまれ'], [64,1,''], [67,1,''], [67,1,''],
-        [64,1,''], [64,1,''], [64,2,''],
-      ]
-    ),
+    <div class="grid four" style="margin-top:14px">
+      <label>学年
+        <select id="gradeSelect">
+          <option value="3">3年</option>
+          <option value="4">4年</option>
+          <option value="5">5年</option>
+          <option value="6">6年</option>
+        </select>
+      </label>
+      <label>組
+        <select id="classSelect">
+          <option value="1">1組</option>
+          <option value="2">2組</option>
+          <option value="3">3組</option>
+        </select>
+      </label>
+      <label>出席番号
+        <select id="attendanceNumber">
+          <option value="1">1番</option>
+          <option value="2">2番</option>
+          <option value="3">3番</option>
+          <option value="4">4番</option>
+          <option value="5">5番</option>
+          <option value="6">6番</option>
+          <option value="7">7番</option>
+          <option value="8">8番</option>
+          <option value="9">9番</option>
+          <option value="10">10番</option>
+          <option value="11">11番</option>
+          <option value="12">12番</option>
+          <option value="13">13番</option>
+          <option value="14">14番</option>
+          <option value="15">15番</option>
+          <option value="16">16番</option>
+          <option value="17">17番</option>
+          <option value="18">18番</option>
+          <option value="19">19番</option>
+          <option value="20">20番</option>
+          <option value="21">21番</option>
+          <option value="22">22番</option>
+          <option value="23">23番</option>
+          <option value="24">24番</option>
+          <option value="25">25番</option>
+          <option value="26">26番</option>
+          <option value="27">27番</option>
+          <option value="28">28番</option>
+          <option value="29">29番</option>
+          <option value="30">30番</option>
+          <option value="31">31番</option>
+          <option value="32">32番</option>
+          <option value="33">33番</option>
+          <option value="34">34番</option>
+          <option value="35">35番</option>
+        </select>
+      </label>
+      <label>曲
+        <select id="songSelect"  disabled>
+          <option>利用コードを入力してください</option>
+        </select>
+      </label>
+    </div>
 
-    makePracticeSong_(
-      'practice_harugakita',
-      '春が来た（練習用・1番）',
-      '高野辰之／岡野貞一（パブリックドメイン）',
-      116,
-      4,
-      [
-        [67,2,'はるがきた'], [64,1,''], [65,1,''], [67,2,''], [69,2,''],
-        [67,2,'はるがきた'], [64,1,''], [65,1,''], [67,3,''], [72,1,''],
-        [69,2,'どこにきた'], [67,2,''], [64,2,''], [62,1,''], [60,1,''],
-        [62,4,''],
-        [67,2,'やまにきた'], [69,1,''], [67,1,''], [64,1,''], [67,3,''],
-        [72,1,'さとにきた'], [74,1,''], [72,1,''], [69,1,''], [72,4,''],
-        [67,2,'のにもきた'], [69,1,''], [72,1,''], [74,1,''], [67,3,''],
-        [64,1,''], [65,1,''], [67,6,''],
-      ]
-    ),
+    <div class="actions" style="margin-top:14px;justify-content:space-between">
+      <div class="guide-controls">
+        <label class="option-line"><input id="guideTone" type="checkbox" checked> 歌う音をガイドで流す</label>
+        <label class="compact-label">ガイド
+          <select id="guideMode">
+            <option value="full" selected>音価どおり（おすすめ）</option>
+          </select>
+        </label>
+        <label class="compact-label guide-volume">音量
+          <input id="guideVolume" type="range" min="1" max="10" value="3" step="1">
+          <output id="guideVolumeValue">3</output>
+        </label>
+      </div>
+      <div class="actions">
+        <button id="startButton"  disabled>マイクを許可してスタート</button>
+        <button id="stopButton" class="secondary hidden" >途中でやめる</button>
+      </div>
+    </div>
+    <p class="small muted" style="margin-bottom:0">
+      音声そのものは録音・保存・送信しません。送信するのは学年・組・出席番号と採点結果だけです。
+      ガイド音は、先生が入力した音価の長さだけ鳴ります。カウントは音程のないクリック音です。
+      音程は少しやさしめに判定し、自然な抑揚や声の揺れは減点しにくくしています。
+      声量は大きいほど加点されますが、無理に叫ばなくても「しっかりした声」で上限に届く設計です。
+    </p>
+  </section>
 
-    makePracticeSong_(
-      'practice_sakura',
-      'さくらさくら（練習用）',
-      '日本古謡／パブリックドメイン',
-      96,
-      4,
-      [
-        [69,1,'さくら　さくら'], [69,1,''], [71,2,''],
-        [69,1,''], [69,1,''], [71,2,''],
+  <section class="card stage">
+    <canvas id="pitchCanvas"></canvas>
+    <div class="lyrics">
+      <div id="currentLyric">曲を選んでください</div>
+      <div id="nextLyric"></div>
+    </div>
+    <div class="meter"><div id="meterFill"></div></div>
+    <div id="status" class="status muted">マイクはまだ使用していません</div>
+    <div class="hud">
+      <div><span class="small muted">現在の音</span><strong id="currentNote">―</strong></div>
+      <div><span class="small muted">目標の音</span><strong id="targetNote">―</strong></div>
+      <div><span class="small muted">音程の近さ</span><strong id="livePitchScore">―</strong></div>
+      <div><span class="small muted">残り</span><strong id="remaining">―</strong></div>
+    </div>
+  </section>
 
-        [69,1,'のやまも　さとも'], [71,1,''], [72,1,''], [71,1,''],
-        [69,1,''], [71,1,''], [69,1,''], [65,2,''],
+  <section id="resultCard" class="card hidden">
+    <h2 style="text-align:center;margin-top:0">採点結果</h2>
+    <div class="result-hero">
+      <div id="scoreRing" class="score-ring">
+        <div class="score-ring-content">
+          <div id="totalResult" class="result-score">0.0</div>
+          <div class="result-score-unit">点</div>
+        </div>
+      </div>
+      <div>
+        <div id="rankBadge" class="rank-badge">―</div>
+        <h3 id="resultTitle" class="result-title">採点中…</h3>
+        <p id="resultComment" class="result-comment"></p>
+      </div>
+    </div>
 
-        [64,2,'みわたす　かぎり'], [72,2,''], [64,1,''], [65,1,''],
-        [64,1,''], [64,1,''], [72,1,''], [71,2,''],
+    <div class="detail-grid">
+      <div class="detail-score">
+        <div class="detail-score-head"><span>音程</span><strong id="pitchResult">0.0</strong></div>
+        <div class="score-bar"><span id="pitchBar"></span></div>
+      </div>
+      <div class="detail-score">
+        <div class="detail-score-head"><span>リズム</span><strong id="rhythmResult">0.0</strong></div>
+        <div class="score-bar"><span id="rhythmBar"></span></div>
+      </div>
+      <div class="detail-score">
+        <div class="detail-score-head"><span>なめらかさ</span><strong id="stabilityResult">0.0</strong></div>
+        <div class="score-bar"><span id="stabilityBar"></span></div>
+      </div>
+      <div class="detail-score">
+        <div class="detail-score-head"><span>ロングトーン</span><strong id="longToneResult">0.0</strong></div>
+        <div class="score-bar"><span id="longToneBar"></span></div>
+      </div>
+      <div class="detail-score">
+        <div class="detail-score-head"><span>声量</span><strong id="singingResult">0.0</strong></div>
+        <div class="score-bar"><span id="singingBar"></span></div>
+      </div>
+    </div>
 
-        [69,1,'かすみか　くもか'], [71,1,''], [72,1,''], [71,1,''],
-        [69,1,''], [71,1,''], [69,1,''], [65,2,''],
+    <div class="result-stats">
+      <div><span class="muted">ぴったり音符</span><strong><span id="excellentNotes">0</span>音</strong></div>
+      <div><span class="muted">最大コンボ</span><strong><span id="maxCombo">0</span>音</strong></div>
+      <div><span class="muted">判定音符</span><strong><span id="judgedNotes">0</span>音</strong></div>
+    </div>
+    <div id="resultTip" class="result-tip"></div>
+    <div id="saveStatus" class="status muted" style="margin-top:10px">記録はまだ送信していません。</div>
+    <div class="actions" style="justify-content:center;margin-top:14px">
+      <button id="retryButton">もう一度うたう</button>
+    </div>
+  </section>
 
-        [64,2,'あさひに　におう'], [72,2,''], [64,1,''], [65,1,''],
-        [64,1,''], [64,1,''], [72,1,''], [71,2,''],
+  <section class="card">
+    <h2 style="margin-top:0">ランキングについて</h2>
+    <p style="margin-bottom:6px">個人ランキングと全12クラスのクラス対抗ランキングは、先生ページで確認します。</p>
+    <p class="small muted" style="margin-bottom:0">児童の成績情報を公開Webページから読み出せないようにするため、この画面には全校ランキングを表示しません。先生が必要に応じて教室で提示できます。</p>
+  </section>
+</main>
 
-        [69,1,'さくら　さくら'], [69,1,''], [71,2,''],
-        [69,1,''], [69,1,''], [71,2,''],
+<div id="countdown" class="countdown hidden" role="dialog" aria-live="assertive" aria-label="歌い始めの案内">
+  <div class="countdown-panel">
+    <div id="countdownLabel" class="countdown-label"></div>
+    <div id="countdownMain" class="countdown-main"></div>
+    <div id="countdownSub" class="countdown-sub"></div>
+    <div id="countdownBeats" class="countdown-beats"></div>
+  </div>
+</div>
+<div id="classroomPauseOverlay" class="classroom-pause hidden" role="alert" aria-live="assertive">
+  <div class="panel">
+    <h2>先生がいったん停止しています</h2>
+    <p>そのまま待ってください。先生が「再開」を押すと、またスタートできるようになります。</p>
+  </div>
+</div>
+<iframe name="scoreSink" class="hidden" title="score save"></iframe>
 
-        [64,1,'はなざかり'], [65,1,''], [71,1,''], [69,1,''],
-        [65,2,''], [64,2,''],
-      ]
-    ),
-  ];
-}
-
-function makePracticeSong_(songId, title, artist, bpm, countIn, beatSpecs) {
-  const beatSec = 60 / bpm;
-  let beatCursor = 0;
-
-  const notes = beatSpecs.map(spec => {
-    const midi = spec[0];
-    const beats = Number(spec[1] || 1);
-    const lyric = String(spec[2] || '');
-
-    const note = {
-      start: round3_(beatCursor * beatSec),
-      duration: round3_(Math.max(0.08, beats * beatSec * 0.96)),
-      midi,
-      lyric,
-    };
-    beatCursor += beats;
-    return note;
-  });
-
-  return {
-    songId,
-    title,
-    artist,
-    bpm,
-    countIn,
-    backingTrackUrl: '',
-    notes,
-    isActive: true,
-    updatedAt: new Date(),
-  };
-}
-
-function createSampleSong_() {
-  const noteNames = [60, 62, 64, 65, 67, 67, 65, 64, 62, 60];
-  const lyrics = ['ド', 'レ', 'ミ', 'ファ', 'ソー', 'ソ', 'ファ', 'ミ', 'レ', 'ドー'];
-  const notes = noteNames.map((midi, i) => ({
-    start: i * 0.8,
-    duration: i === 4 || i === 9 ? 1.4 : 0.72,
-    midi,
-    lyric: lyrics[i],
-  }));
-
-  return {
-    songId: 'sample01',
-    title: '音程れんしゅう（ドレミ）',
-    artist: 'サンプル',
-    bpm: 75,
-    countIn: 4,
-    backingTrackUrl: '',
-    notes,
-    isActive: true,
-    updatedAt: new Date(),
-  };
-}
-
-function cleanText_(value, maxLength) {
-  return String(value == null ? '' : value)
-    .replace(/[\u0000-\u001F\u007F]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, maxLength || 100);
-}
-
-function cleanId_(value) {
-  return String(value || '')
-    .trim()
-    .replace(/[^0-9A-Za-z_-]/g, '')
-    .slice(0, 50);
-}
-
-function cleanUrl_(value) {
-  const url = String(value || '').trim();
-  if (!url) return '';
-  if (!/^https:\/\//i.test(url)) {
-    throw new Error('伴奏URLは https:// から始まるものにしてください。');
-  }
-  return url.slice(0, 500);
-}
-
-function clampNumber_(value, min, max, fallback) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, n));
-}
-
-function toScore_(value) {
-  return Math.round(clampNumber_(value, 0, 100, 0));
-}
-
-function toScore1_(value) {
-  return round1_(clampNumber_(value, 0, 100, 0));
-}
-
-function scoreRankLabel_(score) {
-  const value = Number(score || 0);
-  if (value >= 98) return 'SSS';
-  if (value >= 95) return 'SS';
-  if (value >= 90) return 'S';
-  if (value >= 80) return 'A';
-  if (value >= 70) return 'B';
-  if (value >= 60) return 'C';
-  return 'D';
-}
-
-function round3_(value) {
-  return Math.round(Number(value) * 1000) / 1000;
-}
-
-function dateToIso_(value) {
-  const d = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(d.getTime()) ? '' : d.toISOString();
-}
-
-function escapeHtml_(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
+<script src="app.js" defer></script>
+</body>
+</html>
