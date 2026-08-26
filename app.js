@@ -303,7 +303,7 @@
         audio: {
           echoCancellation: { ideal: true },
           noiseSuppression: { ideal: false },
-          autoGainControl: { ideal: true },
+          autoGainControl: { ideal: false },
           channelCount: { ideal: 1 },
         },
         video: false,
@@ -366,6 +366,9 @@
         pitchSampleCount: 0,
         excellentSamples: 0,
         firstVoiceAt: null,
+        rmsSum: 0,
+        rmsCount: 0,
+        rmsPeak: 0,
         midi: note.midi,
       }));
 
@@ -489,7 +492,7 @@
       currentPitch = result.frequency;
       currentRms = result.rms;
       lastPitchCheck = now;
-      collectScoreSample(elapsed, currentPitch);
+      collectScoreSample(elapsed, currentPitch, currentRms);
     }
 
     drawPitchCanvas(elapsed);
@@ -503,34 +506,77 @@
     animationId = requestAnimationFrame(animate);
   }
 
-  function collectScoreSample(elapsed, frequency) {
+  function collectScoreSample(elapsed, frequency, rms) {
     const index = findActiveNoteIndex(elapsed);
     if (index < 0) return;
     const note = selectedSong.notes[index];
     if (note.midi == null) return;
     const stat = stats[index];
+
     stat.totalSamples++;
+
+    const safeRms = Math.max(0, Number(rms) || 0);
+    stat.rmsSum += safeRms;
+    stat.rmsCount++;
+    stat.rmsPeak = Math.max(stat.rmsPeak, safeRms);
+
     if (!frequency) return;
 
     stat.voicedSamples++;
     if (stat.firstVoiceAt == null) stat.firstVoiceAt = elapsed;
+
     const targetFreq = midiToFrequency(note.midi);
-    const signedCents = Math.max(-300, Math.min(300, 1200 * Math.log2(frequency / targetFreq)));
+    const signedCents = Math.max(
+      -600,
+      Math.min(600, 1200 * Math.log2(frequency / targetFreq))
+    );
     const cents = Math.abs(signedCents);
-    const quality = pitchQuality(cents);
-    stat.pitchQualitySum += quality;
+
+    stat.pitchQualitySum += pitchQuality(cents);
     stat.centsSum += signedCents;
     stat.centsSquareSum += signedCents * signedCents;
     stat.pitchSampleCount++;
-    if (cents <= 50) stat.excellentSamples++;
+
+    // 前よりやさしめ。半音弱くらいまで「よく合っている」扱い。
+    if (cents <= 80) stat.excellentSamples++;
   }
 
   function pitchQuality(cents) {
-    if (cents <= 25) return 1;
-    if (cents <= 50) return .88;
-    if (cents <= 100) return .58;
-    if (cents <= 200) return .22;
+    // 子どもの歌声・自然なしゃくり・ビブラートを考慮して、
+    // 以前より広めの許容幅にしています。
+    if (cents <= 50) return 1.00;
+    if (cents <= 100) return 0.96;
+    if (cents <= 150) return 0.88;
+    if (cents <= 220) return 0.72;
+    if (cents <= 300) return 0.50;
+    if (cents <= 420) return 0.25;
     return 0;
+  }
+
+  function loudnessQuality(rms) {
+    // 大きい声ほど加点。ただし無理に叫ばなくても
+    // 「しっかりした声」で上限に届くよう飽和させます。
+    const x = Math.max(0, Number(rms) || 0);
+    const points = [
+      [0.003, 0],
+      [0.006, 25],
+      [0.010, 45],
+      [0.016, 65],
+      [0.025, 80],
+      [0.040, 92],
+      [0.060, 100],
+    ];
+
+    if (x <= points[0][0]) return 0;
+    for (let i = 1; i < points.length; i++) {
+      if (x <= points[i][0]) {
+        const [x0, y0] = points[i - 1];
+        const [x1, y1] = points[i];
+        const t = (x - x0) / Math.max(0.000001, x1 - x0);
+        return (y0 + (y1 - y0) * t) / 100;
+      }
+    }
+    return 1;
   }
 
   async function finishGame() {
@@ -554,74 +600,119 @@
       .filter(item => item.note.midi != null);
 
     const details = noteStats.map(({ stat, note }) => {
-      const pitch = stat.voicedSamples ? stat.pitchQualitySum / stat.voicedSamples : 0;
+      const voicedRatio = stat.totalSamples
+        ? Math.min(1, stat.voicedSamples / stat.totalSamples)
+        : 0;
+
+      // 1サンプルずつ「完全一致」を要求せず、
+      // 音全体の中心が目標音に合っているかを重視します。
+      // これにより自然なしゃくり・抑揚・ビブラートを減点しにくくします。
+      let pitch = 0;
+      let stability = 0;
+
+      if (stat.pitchSampleCount > 0) {
+        const meanCents = stat.centsSum / stat.pitchSampleCount;
+        const centerQuality = pitchQuality(Math.abs(meanCents));
+        const sampleQuality = stat.pitchQualitySum / stat.pitchSampleCount;
+        pitch = centerQuality * 0.68 + sampleQuality * 0.32;
+
+        if (stat.pitchSampleCount >= 2) {
+          const variance = Math.max(
+            0,
+            stat.centsSquareSum / stat.pitchSampleCount - meanCents * meanCents
+          );
+          const deviation = Math.sqrt(variance);
+
+          // ±70cent程度の自然な揺れはほぼ減点しない。
+          // 「一直線に同じ高さで伸ばす」こと自体を高得点条件にしない。
+          const excess = Math.max(0, deviation - 70);
+          const smoothness = Math.max(0, Math.min(1, 1 - excess / 230));
+          stability = smoothness * 0.65 + voicedRatio * 0.35;
+        } else {
+          stability = 0.50 * voicedRatio;
+        }
+      }
+
       const onset = stat.firstVoiceAt == null
         ? 0
-        : Math.max(0, 1 - Math.abs(stat.firstVoiceAt - note.start) / 0.38);
-      const sustain = stat.totalSamples
-        ? Math.min(1, (stat.voicedSamples / stat.totalSamples) * 1.08)
-        : 0;
-      const rhythm = onset * 0.65 + sustain * 0.35;
+        : Math.max(0, 1 - Math.abs(stat.firstVoiceAt - note.start) / 0.55);
 
-      let stability = 0;
-      if (stat.pitchSampleCount >= 2) {
-        const mean = stat.centsSum / stat.pitchSampleCount;
-        const variance = Math.max(
-          0,
-          stat.centsSquareSum / stat.pitchSampleCount - mean * mean
-        );
-        const deviation = Math.sqrt(variance);
-        stability = Math.max(0, Math.min(1, 1 - deviation / 105));
-      } else if (stat.pitchSampleCount === 1) {
-        stability = 0.45;
-      }
+      // 少し途中で息継ぎしても大きく落ちすぎないようにする。
+      const sustain = stat.totalSamples
+        ? Math.min(1, (stat.voicedSamples / stat.totalSamples) * 1.20)
+        : 0;
+
+      const rhythm = onset * 0.55 + sustain * 0.45;
+
+      const averageRms = stat.rmsCount ? stat.rmsSum / stat.rmsCount : 0;
+      const loudness = loudnessQuality(averageRms);
 
       return {
         pitch,
         rhythm,
         sustain,
         stability,
+        loudness,
         duration: Number(note.duration || 0),
       };
     });
 
     const longDetails = details.filter(detail => detail.duration >= 0.8);
     const longToneSource = longDetails.length ? longDetails : details;
+
+    // ロングトーンも「同じ音程に固定」ではなく、
+    // 声が続いていることを中心に見る。
     const longToneValues = longToneSource.map(detail =>
-      detail.sustain * 0.65 + detail.pitch * 0.35
+      detail.sustain * 0.78 + detail.pitch * 0.22
     );
 
     const totalSamples = noteStats.reduce((sum, item) => sum + item.stat.totalSamples, 0);
     const voicedSamples = noteStats.reduce((sum, item) => sum + item.stat.voicedSamples, 0);
-    const singingQuality = totalSamples
-      ? Math.min(1, (voicedSamples / totalSamples) * 1.08)
+    const voicedRatio = totalSamples
+      ? Math.min(1, voicedSamples / totalSamples)
       : 0;
 
     const pitchScore = roundScore(100 * average(details.map(detail => detail.pitch)));
     const rhythmScore = roundScore(100 * average(details.map(detail => detail.rhythm)));
     const stabilityScore = roundScore(100 * average(details.map(detail => detail.stability)));
     const longToneScore = roundScore(100 * average(longToneValues));
-    const singingScore = roundScore(100 * singingQuality);
+
+    // singingScore という内部名は既存データ互換のため残し、
+    // 画面上では「声量」として扱います。
+    const loudnessAverage = average(details.map(detail => detail.loudness));
+    const singingScore = roundScore(
+      100 * (loudnessAverage * 0.82 + voicedRatio * 0.18)
+    );
+
+    // 声量を25%にして、しっかり声を出すほど総合点に反映。
     const totalScore = roundScore(
-      pitchScore * 0.45 +
-      rhythmScore * 0.25 +
-      stabilityScore * 0.15 +
+      pitchScore * 0.35 +
+      rhythmScore * 0.20 +
+      stabilityScore * 0.10 +
       longToneScore * 0.10 +
-      singingScore * 0.05
+      singingScore * 0.25
     );
 
     let combo = 0;
     let maxCombo = 0;
     let excellentNoteCount = 0;
+
     details.forEach(detail => {
-      const hit = detail.pitch >= 0.72 && detail.rhythm >= 0.62 && detail.sustain >= 0.48;
+      const hit =
+        detail.pitch >= 0.68 &&
+        detail.rhythm >= 0.55 &&
+        detail.sustain >= 0.42;
+
       if (hit) {
         combo++;
         maxCombo = Math.max(maxCombo, combo);
       } else {
         combo = 0;
       }
-      if (detail.pitch >= 0.9 && detail.rhythm >= 0.75) excellentNoteCount++;
+
+      if (detail.pitch >= 0.84 && detail.rhythm >= 0.65) {
+        excellentNoteCount++;
+      }
     });
 
     return {
@@ -732,16 +823,16 @@
     if (result.totalScore >= 55) {
       return '歌い始めの音と拍を意識すると、さらに点数が上がりそうです。';
     }
-    return 'まずは小さな声でも大丈夫。はじめの音をよく聴いて歌ってみよう。';
+    return 'はじめの音をよく聴いて、少し大きめの声で歌ってみよう。';
   }
 
   function getPracticeTip(result) {
     const metrics = [
       { label: '音程', value: result.pitchScore, tip: '目標の音程バーの中央をねらって、声をゆっくり動かしてみよう。' },
       { label: 'リズム', value: result.rhythmScore, tip: '歌詞の最初を、カウントや音程バーの左端に合わせてみよう。' },
-      { label: '安定感', value: result.stabilityScore, tip: '息を一定に流し、声を揺らしすぎないように伸ばしてみよう。' },
-      { label: 'ロングトーン', value: result.longToneScore, tip: '伸ばす音を途中で切らず、最後まで同じ声で保ってみよう。' },
-      { label: '歌唱率', value: result.singingScore, tip: '休符以外は声を途切れさせず、歌詞の最後まで歌ってみよう。' },
+      { label: 'なめらかさ', value: result.stabilityScore, tip: '自然な抑揚をつけながら、声が急に飛びすぎないよう歌ってみよう。' },
+      { label: 'ロングトーン', value: result.longToneScore, tip: '伸ばす音は、自然な揺れをつけてもOK。最後まで息をつないでみよう。' },
+      { label: '声量', value: result.singingScore, tip: '無理に叫ばず、教室の後ろまで届くような声を意識してみよう。' },
     ];
     metrics.sort((a, b) => a.value - b.value);
     return `次のチャレンジ：${metrics[0].label}アップ！ ${metrics[0].tip}`;
@@ -982,7 +1073,7 @@
       let dotColor = '#fb7185';
       if (active?.midi != null) {
         const cents = Math.abs((midi - active.midi) * 100);
-        dotColor = cents <= 50 ? '#34d399' : cents <= 100 ? '#fbbf24' : '#fb7185';
+        dotColor = cents <= 80 ? '#34d399' : cents <= 160 ? '#fbbf24' : '#fb7185';
       }
       ctx.fillStyle = dotColor;
       ctx.beginPath(); ctx.arc(playX, y, 10, 0, Math.PI * 2); ctx.fill();
@@ -1007,7 +1098,10 @@
 
     if (active?.midi != null && currentPitch) {
       const cents = Math.abs(1200 * Math.log2(currentPitch / midiToFrequency(active.midi)));
-      document.getElementById('livePitchScore').textContent = cents <= 35 ? 'ぴったり' : cents <= 80 ? 'もう少し' : 'ちがうよ';
+      document.getElementById('livePitchScore').textContent =
+        cents <= 70 ? 'ぴったり' :
+        cents <= 150 ? 'いい感じ' :
+        cents <= 240 ? 'もう少し' : 'ちがうよ';
     } else {
       document.getElementById('livePitchScore').textContent = '―';
     }
@@ -1024,7 +1118,15 @@
       if (selectedSong.notes[i].start <= elapsed + .05) currentIndex = i;
       else break;
     }
-    const current = currentIndex >= 0 ? selectedSong.notes[currentIndex] : selectedSong.notes[0];
+    let currentLyric = '';
+    const searchFrom = currentIndex >= 0 ? currentIndex : 0;
+    for (let i = searchFrom; i >= 0; i--) {
+      if (selectedSong.notes[i].lyric) {
+        currentLyric = selectedSong.notes[i].lyric;
+        break;
+      }
+    }
+
     let next = '';
     for (let i = Math.max(0, currentIndex + 1); i < selectedSong.notes.length; i++) {
       if (selectedSong.notes[i].lyric) {
@@ -1032,7 +1134,8 @@
         break;
       }
     }
-    document.getElementById('currentLyric').textContent = current?.lyric || '♪';
+
+    document.getElementById('currentLyric').textContent = currentLyric || '♪';
     document.getElementById('nextLyric').textContent = next ? `つぎ：${next}` : '';
   }
 
