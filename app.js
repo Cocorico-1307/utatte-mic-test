@@ -970,7 +970,7 @@
 
     if (!apiUrl || !currentLessonCode) {
       icon.textContent = '🌰';
-      stage.textContent = 'まだ たね です';
+      stage.textContent = '木レベル 1　たね';
       fill.style.width = '0%';
       next.textContent = '教材を読み込むとクラスの木が表示されます。';
       return;
@@ -999,12 +999,13 @@
       stage.textContent = `${garden.className || ''}　${garden.stageLabel || ''}`;
       fill.style.width = `${Math.max(0, Math.min(100, Number(garden.progressPercent || 0)))}%`;
 
-      if (garden.completed) {
-        next.textContent = '🎊 にじの木が完成！ みんなで育てきりました！';
-      } else {
-        next.textContent =
-          `あと${Number(garden.pointsToNext || 0)}ポイントで「${garden.nextStageLabel || '次の成長'}」！`;
-      }
+      const level = Math.max(1, Number(garden.level || 1));
+      const pointsInLevel = Math.max(0, Number(garden.pointsInLevel || 0));
+      const levelSize = Math.max(1, Number(garden.levelSize || 35));
+      const pointsToNext = Math.max(1, Number(garden.pointsToNext || levelSize));
+
+      next.textContent =
+        `いま ${pointsInLevel}/${levelSize}ポイント　あと${pointsToNext}ポイントで木レベル${level + 1}！`;
     } catch (err) {
       icon.textContent = '🌰';
       stage.textContent = `${grade}年${classNumber}組の木`;
