@@ -352,6 +352,15 @@
     });
   }
 
+
+  function focusSingingStage() {
+    const stage = document.getElementById('singingStage');
+    if (!stage) return;
+    requestAnimationFrame(() => {
+      stage.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
   async function getMicrophoneStream() {
     // Chromebookではマイク入力が小さいことがあるため、
     // 自動ゲインを有効にして歌声を拾いやすくします。
@@ -400,6 +409,10 @@
     await stopGame(false);
     document.getElementById('resultCard').classList.add('hidden');
     document.getElementById('startButton').disabled = true;
+
+    // 歌唱開始時に一度だけステージを画面上端へ合わせます。
+    // 歌唱中は自動スクロールしないので、音程バーと下の判定表示が安定して見えます。
+    focusSingingStage();
     setStatus('マイクを準備しています…');
 
     try {
