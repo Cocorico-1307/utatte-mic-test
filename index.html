@@ -1230,6 +1230,421 @@
       .card, #entryCard { border-radius: 20px; padding: 15px; }
     }
 
+
+    /* =========================================================
+       ふりかえりページとそろえる見た目（V2）
+       ※ 見た目だけの上書き。HTML/JavaScript/機能には触れません。
+       ========================================================= */
+    :root {
+      --ink: #55463e;
+      --sub: #7b6c64;
+      --bg: #f8f0dc;
+      --bg-deep: #f1e5c9;
+      --card: #fffdf7;
+      --line: #eadcc4;
+      --line-strong: #dfcba7;
+      --accent: #e5ad3d;
+      --accent-dark: #bd8125;
+      --accent-soft: #fff3c9;
+      --accent2: #cf6b5d;
+      --accent2-dark: #b45549;
+      --accent2-soft: #fbe5df;
+      --green: #88a36d;
+      --green-soft: #f1f5e9;
+      --good: #6d9367;
+      --warn: #dca23a;
+      --bad: #c65e57;
+      --shadow: 0 14px 30px rgba(103, 79, 54, .10);
+      --shadow-soft: 0 7px 18px rgba(103, 79, 54, .07);
+    }
+
+    html { background: #f8f0dc; }
+
+    body {
+      background:
+        radial-gradient(circle at 5% 12%, rgba(229,173,61,.10) 0 90px, transparent 91px),
+        radial-gradient(circle at 96% 19%, rgba(136,163,109,.09) 0 120px, transparent 121px),
+        linear-gradient(180deg, #fbf5e7 0%, #f8f0dc 55%, #f5ecd7 100%);
+    }
+
+    body::before,
+    body::after { display: none; }
+
+    header {
+      width: min(1150px, calc(100% - 32px));
+      margin: 30px auto 26px;
+      padding: clamp(34px, 5vw, 52px) clamp(28px, 5vw, 48px) clamp(31px, 4vw, 43px);
+      text-align: left;
+      border: 1px solid #ead8bd;
+      border-top: 8px solid #ea8375;
+      border-bottom: 1px solid #ead8bd;
+      border-radius: 30px;
+      background:
+        radial-gradient(circle at 92% 15%, rgba(234,131,117,.12) 0 94px, transparent 95px),
+        linear-gradient(180deg, #fffdf8 0%, #fffaf0 100%);
+      box-shadow: 0 14px 30px rgba(91, 70, 48, .10);
+      overflow: hidden;
+    }
+
+    header::before {
+      content: "♪ ♫";
+      position: static;
+      display: block;
+      margin: 0 0 15px;
+      color: #ea8375;
+      font-size: clamp(20px, 3vw, 30px);
+      line-height: 1;
+      letter-spacing: .15em;
+      transform: none;
+      opacity: 1;
+    }
+
+    header::after {
+      content: "⌂";
+      position: absolute;
+      right: clamp(28px, 7vw, 80px);
+      bottom: 10px;
+      top: auto;
+      color: rgba(207,107,93,.15);
+      font-size: clamp(72px, 11vw, 126px);
+      line-height: 1;
+      transform: none;
+      opacity: 1;
+    }
+
+    header h1 {
+      margin: 0;
+      color: #c96558;
+      font-size: clamp(34px, 6vw, 56px);
+      line-height: 1.16;
+      letter-spacing: .055em;
+      text-shadow: none;
+    }
+
+    header h1::before { display: none; }
+
+    header p {
+      display: block;
+      width: fit-content;
+      max-width: 82%;
+      margin: 18px 0 0;
+      padding: 0;
+      color: #61534b;
+      background: transparent;
+      border: 0;
+      border-radius: 0;
+      font-size: clamp(14px, 2vw, 18px);
+      font-weight: 700;
+      line-height: 1.7;
+    }
+
+    main {
+      width: min(1150px, calc(100% - 32px));
+      padding-bottom: 64px;
+    }
+
+    .card {
+      overflow: visible;
+      margin-bottom: 24px;
+      padding: clamp(20px, 3.4vw, 30px);
+      background: rgba(255,253,247,.98);
+      border: 1px solid var(--line);
+      border-top: 1px solid var(--line);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+    }
+
+    .card::after { display: none; }
+
+    #entryCard {
+      background: rgba(255,253,247,.99);
+      border: 1px solid #eadcc4;
+      border-top: 1px solid #eadcc4;
+    }
+
+    #entryCard::before { display: none; }
+
+    h2 {
+      margin-top: 0;
+      color: #c96558;
+      font-size: clamp(22px, 3.2vw, 30px);
+      letter-spacing: .02em;
+    }
+
+    h2::before {
+      content: "♪";
+      display: inline-grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      margin-right: 10px;
+      border-radius: 50%;
+      color: #fff;
+      background: #ea8375;
+      font-size: 16px;
+      vertical-align: .12em;
+    }
+
+    h3 { color: #725448; }
+
+    label {
+      color: #5d5048;
+      font-weight: 800;
+    }
+
+    input,
+    select {
+      min-height: 54px;
+      padding: 13px 16px;
+      color: #55463e;
+      background: #fffdfa;
+      border: 1.5px solid #dcc7a6;
+      border-radius: 16px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.9);
+    }
+
+    input:focus,
+    select:focus {
+      border-color: #e5ad3d;
+      box-shadow: 0 0 0 4px rgba(229,173,61,.14);
+    }
+
+    button {
+      min-height: 50px;
+      padding: 12px 20px;
+      border-radius: 16px;
+      color: white;
+      background: #dd8b55;
+      box-shadow: 0 7px 15px rgba(165, 102, 63, .14);
+    }
+
+    button:hover:not(:disabled) {
+      filter: brightness(1.025);
+      box-shadow: 0 8px 17px rgba(165, 102, 63, .17);
+    }
+
+    button.secondary {
+      color: #67554a;
+      background: #fff7df;
+      border: 1px solid #e2cfa7;
+      box-shadow: none;
+    }
+
+    #loadLessonButton {
+      background: #dd8b55;
+    }
+
+    #startButton,
+    #retryButton {
+      color: #fff;
+      background: #d97b60;
+      box-shadow: 0 8px 17px rgba(183, 88, 69, .16);
+    }
+
+    .guide-controls {
+      padding: 13px 16px;
+      border: 1px solid #ead3aa;
+      border-radius: 17px;
+      background: #fff8e6;
+    }
+
+    .guide-controls input[type="checkbox"] { accent-color: #d97762; }
+    .guide-volume input[type="range"] { min-height: 0; accent-color: #d97762; }
+
+    .stage {
+      padding: clamp(15px, 2.5vw, 22px);
+      border: 1px solid var(--line);
+      border-top: 1px solid var(--line);
+      background: rgba(255,253,247,.98);
+    }
+
+    canvas {
+      border-radius: 21px;
+      border: 1px solid #213656;
+      box-shadow: 0 9px 20px rgba(18,34,60,.12);
+    }
+
+    .lyrics {
+      min-height: 112px;
+      padding: 18px 8px 4px;
+    }
+
+    #currentLyric { color: #5a453c; }
+
+    .meter {
+      height: 12px;
+      background: #eee4d3;
+    }
+
+    #meterFill {
+      background: linear-gradient(90deg, #89aa77, #e1ae43 55%, #d57461);
+    }
+
+    .hud { gap: 12px; }
+
+    .hud > div {
+      padding: 13px 10px;
+      background: #fff9ed;
+      border: 1px solid #eadbc2;
+      border-radius: 17px;
+    }
+
+    .hud > div:nth-child(2) { background: #fff6df; }
+    .hud > div:nth-child(3) { background: #f5f7ec; }
+    .hud > div:nth-child(4) { background: #fff2ed; }
+
+    .result-hero {
+      padding: 8px 0 4px;
+    }
+
+    .score-ring {
+      background: conic-gradient(#d97862 var(--score-angle), #eee5d7 0);
+      box-shadow: 0 13px 30px rgba(188, 99, 80, .13);
+    }
+
+    .rank-badge {
+      background: #d97862;
+      box-shadow: 0 9px 19px rgba(188,99,80,.16);
+    }
+
+    .detail-score {
+      background: #fff9ee;
+      border: 1px solid #eadbc2;
+      border-radius: 18px;
+    }
+
+    .detail-score:nth-child(2) { background: #fff5df; }
+    .detail-score:nth-child(3) { background: #f3f7eb; }
+    .detail-score:nth-child(4) { background: #fff1eb; }
+    .detail-score:nth-child(5) { background: #fff8e9; }
+
+    .score-bar { background: #ece3d4; }
+    .score-bar span { background: linear-gradient(90deg, #e7b547, #d97862); }
+
+    .result-stats > div {
+      background: #fff8ea;
+      border: 1px solid #ebddc5;
+    }
+
+    .result-tip,
+    .session-progress,
+    .ranking-note {
+      color: #64554c;
+      background: #fff6d7;
+      border: 1px solid #ebd89c;
+      border-radius: 17px;
+    }
+
+    .ranking-box {
+      padding: 18px;
+      border: 1px solid #eadbc2;
+      border-radius: 20px;
+      background: #fffaf1;
+    }
+
+    .rank-row,
+    .class-rank-row {
+      border: 1px solid #eadbc2;
+      border-radius: 17px;
+      background: #fffdfa;
+    }
+
+    .class-rank-row.my-class {
+      outline: 3px solid rgba(229,173,61,.20);
+      background: #fff6d9;
+    }
+
+    .badge-gallery { gap: 12px; }
+
+    .badge-item {
+      min-height: 118px;
+      border: 1px solid #eadbc2;
+      border-radius: 19px;
+      background: #faf7ef;
+    }
+
+    .badge-item.unlocked {
+      background: #fff5dc;
+      border-color: #e8c672;
+      box-shadow: 0 5px 15px rgba(204,153,54,.10);
+    }
+
+    .new-badge-banner {
+      background: #fff3c9;
+      border: 1px solid #e8c468;
+      border-radius: 17px;
+    }
+
+    .garden-wrap {
+      padding: 6px 0;
+    }
+
+    .garden-icon {
+      filter: drop-shadow(0 7px 10px rgba(91,70,48,.09));
+    }
+
+    .garden-track {
+      background: #eee6d7;
+      border-color: #ded0b8;
+    }
+
+    .garden-fill {
+      background: linear-gradient(90deg, #8cac72, #d8bd53);
+    }
+
+    .countdown {
+      background: rgba(78, 62, 51, .58);
+      color: #55463e;
+    }
+
+    .countdown-panel {
+      border: 1px solid #ead9ba;
+      border-top: 7px solid #ea8375;
+      border-radius: 30px;
+      background: #fffaf0;
+      box-shadow: 0 28px 70px rgba(67, 48, 34, .25);
+    }
+
+    .countdown-label { color: #c96558; }
+    .countdown-sub { color: #78675d; }
+    .countdown-beats span { color: #846f63; background: #f2eadc; }
+    .countdown-beats span.done { color: #6d855d; background: #e8efdf; }
+    .countdown-beats span.active { color: #5c4434; background: #f2c35f; }
+
+    .classroom-pause {
+      background: rgba(79, 61, 50, .86);
+    }
+
+    .classroom-pause .panel {
+      color: #55463e;
+      border: 1px solid #ead9ba;
+      border-top: 7px solid #ea8375;
+      background: #fffaf0;
+    }
+
+    .teacher-test-banner {
+      max-width: 1150px;
+      border: 1px dashed #cf9f5a;
+      border-radius: 17px;
+      color: #71594a;
+      background: #fff4d6;
+    }
+
+    @media (max-width: 720px) {
+      header {
+        width: min(100% - 20px, 1150px);
+        margin-top: 12px;
+        border-radius: 23px;
+        padding: 27px 22px 26px;
+      }
+      header::after { opacity: .65; right: 12px; }
+      header p { max-width: 90%; }
+      main { width: min(100% - 20px, 1150px); }
+      .card { border-radius: 23px; padding: 18px 16px; }
+      .grid.four { grid-template-columns: 1fr 1fr; }
+      .guide-controls { width: 100%; }
+    }
+
   </style>
 </head>
 <body>
