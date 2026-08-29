@@ -130,8 +130,9 @@
   }
 
   function normalizeLessonCode(value) {
-    // 児童用利用コードは数字8桁だけ。
-    return String(value || '').replace(/\D/g, '').slice(0, 8);
+    // 児童用利用コードは数字4桁だけ。
+    const digits = String(value || '').replace(/\D/g, '').slice(0, 4);
+    return /^\d{4}$/.test(digits) ? digits : '';
   }
 
   function jsonp(params) {
@@ -1441,10 +1442,10 @@
 
     for (let midi = Math.ceil(minMidi); midi <= Math.floor(maxMidi); midi++) {
       const y = midiToY(midi, minMidi, maxMidi, top, bottom);
-      ctx.strokeStyle = midi % 12 === 0 ? 'rgba(255,255,255,.18)' : 'rgba(255,255,255,.07)';
+      ctx.strokeStyle = midi % 12 === 0 ? 'rgba(255,245,224,.18)' : 'rgba(255,245,224,.07)';
       ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
       if (midi % 12 === 0) {
-        ctx.fillStyle = 'rgba(255,255,255,.55)';
+        ctx.fillStyle = 'rgba(255,240,205,.62)';
         ctx.fillText(midiToNoteName(midi), 8, y - 9);
       }
     }
@@ -1454,18 +1455,18 @@
       const barWidth = Math.max(5, (note.duration / windowSec) * w - 2);
       if (x + barWidth < 0 || x > w) return;
       if (note.midi == null) {
-        ctx.fillStyle = 'rgba(255,255,255,.18)';
+        ctx.fillStyle = 'rgba(255,245,224,.18)';
         ctx.fillRect(x, h / 2 - 3, barWidth, 6);
         return;
       }
       const y = midiToY(note.midi, minMidi, maxMidi, top, bottom);
       const isActive = elapsed >= note.start && elapsed < note.start + note.duration;
-      ctx.fillStyle = isActive ? '#fbbf24' : '#60a5fa';
+      ctx.fillStyle = isActive ? '#efbd4f' : '#e17a58';
       roundRect(ctx, x, y - 8, barWidth, 16, 7);
       ctx.fill();
     });
 
-    ctx.strokeStyle = '#ffffff';
+    ctx.strokeStyle = '#fff7e6';
     ctx.lineWidth = 3;
     ctx.beginPath(); ctx.moveTo(playX, 12); ctx.lineTo(playX, h - 12); ctx.stroke();
 
@@ -1473,21 +1474,21 @@
       const midi = frequencyToMidi(currentPitch);
       const y = midiToY(midi, minMidi, maxMidi, top, bottom);
       const active = getActiveNote(elapsed);
-      let dotColor = '#fb7185';
+      let dotColor = '#d96859';
       if (active?.midi != null) {
         const cents = Math.abs((midi - active.midi) * 100);
-        dotColor = cents <= 80 ? '#34d399' : cents <= 160 ? '#fbbf24' : '#fb7185';
+        dotColor = cents <= 80 ? '#86ad6c' : cents <= 160 ? '#efbd4f' : '#d96859';
       }
       ctx.fillStyle = dotColor;
       ctx.beginPath(); ctx.arc(playX, y, 10, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,247,230,.92)'; ctx.lineWidth = 3; ctx.stroke();
     }
   }
 
   function drawBackground(ctx) {
     const gradient = ctx.createLinearGradient(0, 0, 0, lastCanvasHeight);
-    gradient.addColorStop(0, '#152744');
-    gradient.addColorStop(1, '#0a1426');
+    gradient.addColorStop(0, '#5a3732');
+    gradient.addColorStop(1, '#2b2020');
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, lastCanvasWidth, lastCanvasHeight);
   }
@@ -1702,7 +1703,7 @@
     el.style.color = type === 'error' ? 'var(--bad)' : 'var(--sub)';
   }
   function drawCenteredText(ctx, text, x, y, size) {
-    ctx.fillStyle = 'rgba(255,255,255,.75)';
+    ctx.fillStyle = 'rgba(255,244,220,.78)';
     ctx.font = `800 ${size}px system-ui`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
