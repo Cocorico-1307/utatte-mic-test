@@ -1280,32 +1280,66 @@
   }
 
   function scheduleGuideMelody(startAt = audioContext.currentTime + .08) {
+    if (!audioContext || !selectedSong) return;
+
     const volumeStep = Math.max(1, Math.min(10, Number(document.getElementById('guideVolume')?.value || 4)));
-    const peakGain = 0.025 + volumeStep * 0.018;
+    const peakGain = 0.030 + volumeStep * 0.019;
 
     selectedSong.notes.forEach(note => {
       if (note.midi == null) return;
 
-      const noteStart = startAt + Number(note.start || 0);
-      // 見本の音は、先生が入力した音価の長さだけしっかり鳴らします。
-      const soundingDuration = Math.max(0.06, Number(note.duration || 0.25));
-      const noteEnd = noteStart + soundingDuration;
-      const attackEnd = noteStart + Math.min(0.025, soundingDuration * 0.25);
-      const releaseStart = Math.max(attackEnd, noteEnd - Math.min(0.06, soundingDuration * 0.35));
+      const midi = Number(note.midi);
+      const frequency = midiToFrequency(midi);
+      if (!Number.isFinite(midi) || !Number.isFinite(frequency) || frequency <= 0) return;
 
-      const osc = audioContext.createOscillator();
-      const gain = audioContext.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(midiToFrequency(note.midi), noteStart);
-      gain.gain.setValueAtTime(0.0001, noteStart);
-      gain.gain.linearRampToValueAtTime(peakGain, attackEnd);
-      gain.gain.setValueAtTime(peakGain, releaseStart);
-      gain.gain.exponentialRampToValueAtTime(0.0001, noteEnd);
-      osc.connect(gain).connect(audioContext.destination);
-      osc.start(noteStart);
-      osc.stop(noteEnd + 0.03);
-      guideNodes.push(osc);
+      const noteStart = startAt + Math.max(0, Number(note.start || 0));
+      const soundingDuration = Math.max(0.06, Number(note.duration || 0.25));
+      scheduleAudibleGuideTone(midi, noteStart, soundingDuration, peakGain);
     });
+  }
+
+  // Chromebookなどの小さいスピーカーでも低い音が消えにくいよう、
+  // 純粋なサイン波ではなく倍音を含むtriangle波を使います。
+  // 音程そのものはMIDIの周波数のままで、採点処理には一切影響しません。
+  function scheduleAudibleGuideTone(midi, startAt, duration, peakGain) {
+    if (!audioContext) return;
+
+    const frequency = midiToFrequency(midi);
+    const endAt = startAt + Math.max(0.06, duration);
+    const attackEnd = Math.min(endAt - 0.015, startAt + Math.min(0.012, duration * 0.18));
+    const releaseStart = Math.max(attackEnd + 0.005, endAt - Math.min(0.035, duration * 0.28));
+
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(frequency, startAt);
+
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.linearRampToValueAtTime(peakGain, Math.max(startAt + 0.004, attackEnd));
+    gain.gain.setValueAtTime(peakGain, Math.min(endAt - 0.006, releaseStart));
+    gain.gain.exponentialRampToValueAtTime(0.0001, endAt);
+
+    osc.connect(gain).connect(audioContext.destination);
+    osc.start(startAt);
+    osc.stop(endAt + 0.03);
+    guideNodes.push(osc);
+
+    // 低音だけ、非常に小さな第2倍音を足して端末スピーカーで聞き取りやすくします。
+    // 元の音程感は変えず、C2〜B3付近の「鳴っていないように聞こえる」症状を減らします。
+    if (midi < 60) {
+      const harmonic = audioContext.createOscillator();
+      const harmonicGain = audioContext.createGain();
+      harmonic.type = 'sine';
+      harmonic.frequency.setValueAtTime(frequency * 2, startAt);
+      harmonicGain.gain.setValueAtTime(0.0001, startAt);
+      harmonicGain.gain.linearRampToValueAtTime(peakGain * 0.22, Math.max(startAt + 0.004, attackEnd));
+      harmonicGain.gain.setValueAtTime(peakGain * 0.22, Math.min(endAt - 0.006, releaseStart));
+      harmonicGain.gain.exponentialRampToValueAtTime(0.0001, endAt);
+      harmonic.connect(harmonicGain).connect(audioContext.destination);
+      harmonic.start(startAt);
+      harmonic.stop(endAt + 0.03);
+      guideNodes.push(harmonic);
+    }
   }
 
 
@@ -1350,18 +1384,14 @@
 
   function playReferenceTone(midi, duration) {
     if (!audioContext) return;
-    const now = audioContext.currentTime;
-    const osc = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = midiToFrequency(midi);
-    gain.gain.setValueAtTime(.001, now);
-    gain.gain.linearRampToValueAtTime(.18, now + .05);
-    gain.gain.setValueAtTime(.18, now + Math.max(.08, duration - .12));
-    gain.gain.exponentialRampToValueAtTime(.001, now + duration);
-    osc.connect(gain).connect(audioContext.destination);
-    osc.start(now);
-    osc.stop(now + duration + .03);
+    const safeMidi = Number(midi);
+    const safeDuration = Math.max(0.12, Number(duration || 1));
+    const frequency = midiToFrequency(safeMidi);
+    if (!Number.isFinite(safeMidi) || !Number.isFinite(frequency) || frequency <= 0) return;
+
+    // 歌う前の「はじめの音」も、曲中のガイド音と同じ音色にそろえます。
+    // これにより低音もChromebookのスピーカーで聞き取りやすくなります。
+    scheduleAudibleGuideTone(safeMidi, audioContext.currentTime + 0.015, safeDuration, 0.18);
   }
 
   function playCountClick(accent = false) {
