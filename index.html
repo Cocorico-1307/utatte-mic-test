@@ -300,15 +300,16 @@
       overflow: hidden;
       background: #fffaf0;
       border-top: 5px solid var(--coral);
+      scroll-margin-top: 8px;
     }
 
     .stage-control-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 14px;
+      gap: 10px;
       flex-wrap: wrap;
-      padding: 4px 2px 13px;
+      padding: 2px 2px 8px;
     }
 
     .stage-control-copy {
@@ -338,7 +339,8 @@
 
     canvas {
       width: 100%;
-      height: clamp(290px, 34vw, 420px);
+      /* 音程バー＋歌詞＋判定表示を、Chromebookの1画面に収めやすい高さに固定。 */
+      height: clamp(220px, 28vh, 300px);
       display: block;
       background: linear-gradient(#17243c, #101929);
       border: 3px solid #e8b348;
@@ -347,23 +349,32 @@
     }
 
     .lyrics {
-      height: 112px;
-      padding: 12px 6px 4px;
-      display: grid;
-      align-content: center;
+      height: 104px;
+      padding: 7px 6px 5px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 3px;
       text-align: center;
       overflow: hidden;
     }
 
     #currentLyric {
       color: #503b31;
-      font-size: clamp(30px, 7vw, 60px);
+      font-size: clamp(28px, 5vw, 52px);
       font-weight: 950;
-      letter-spacing: .09em;
+      line-height: 1.05;
+      letter-spacing: .07em;
       text-shadow: none;
     }
 
-    #nextLyric { color: var(--sub); font-size: clamp(17px, 3vw, 23px); margin-top: 6px; }
+    #nextLyric {
+      color: var(--sub);
+      font-size: clamp(15px, 2vw, 20px);
+      line-height: 1.25;
+      margin-top: 0;
+      min-height: 25px;
+    }
 
     .meter {
       height: 10px;
@@ -379,22 +390,22 @@
       transition: width .08s linear;
     }
 
-    .status { text-align: center; font-weight: 900; min-height: 28px; margin: 9px 0; }
+    .status { text-align: center; font-weight: 900; min-height: 24px; margin: 5px 0; }
 
-    .hud { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-top: 10px; }
+    .hud { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 6px; }
 
     .hud > div {
       background: #fff8e8;
       border: 1px solid #ead8b8;
       border-radius: 13px;
-      padding: 10px;
+      padding: 7px 8px;
       text-align: center;
     }
 
     .hud > div:nth-child(2) { background: #fff1df; }
     .hud > div:nth-child(3) { background: #f7f2df; }
     .hud > div:nth-child(4) { background: #f5eee5; }
-    .hud strong { display: block; color: #594034; font-size: clamp(20px, 4vw, 32px); }
+    .hud strong { display: block; color: #594034; font-size: clamp(19px, 3vw, 28px); line-height: 1.15; }
 
     .countdown {
       position: fixed;
@@ -556,6 +567,8 @@
       .student-growth-icon { width: 92px; height: 92px; font-size: 50px; }
       .ranking-grid { grid-template-columns: 1fr; }
       .hud { grid-template-columns: repeat(2, 1fr); }
+      canvas { height: 230px; }
+      .lyrics { height: 94px; }
       .result-hero { grid-template-columns: 1fr; text-align: center; }
       .detail-grid { grid-template-columns: 1fr 1fr; }
       .result-stats { grid-template-columns: 1fr; }
