@@ -32,7 +32,10 @@
     new URLSearchParams(window.location.search).get('teacherTest') === '1';
 
   document.addEventListener('DOMContentLoaded', init);
-  window.addEventListener('resize', resizeCanvas);
+  window.addEventListener('resize', () => {
+    resizeCanvas();
+    if (!isRunning) drawIdleCanvas();
+  });
 
   window.addEventListener('message', event => {
     const data = event.data;
@@ -275,6 +278,12 @@
   function onSongChange() {
     const id = document.getElementById('songSelect').value;
     selectedSong = songs.find(song => song.songId === id) || null;
+    const stageSongTitle = document.getElementById('stageSongTitle');
+    if (stageSongTitle) {
+      stageSongTitle.textContent = selectedSong
+        ? (selectedSong.artist ? `${selectedSong.title}（${selectedSong.artist}）` : selectedSong.title)
+        : '曲を選んでください';
+    }
     document.getElementById('resultCard').classList.add('hidden');
     document.getElementById('saveStatus').textContent = '記録はまだ送信していません。';
     document.getElementById('saveStatus').className = 'status muted';
@@ -1366,7 +1375,9 @@
 
   function drawPitchCanvas(elapsed) {
     const canvas = document.getElementById('pitchCanvas');
-    resizeCanvas();
+    // 歌唱中に毎フレームCanvasの大きさを取り直すと、端末によっては
+    // 1px前後の再計算が繰り返されて画面がぶれて見えるため固定します。
+    if (!lastCanvasWidth || !lastCanvasHeight) resizeCanvas();
     const ctx = canvas.getContext('2d');
     const w = lastCanvasWidth;
     const h = lastCanvasHeight;
@@ -1383,24 +1394,11 @@
     const songMinMidi = Math.min(...midiValues);
     const songMaxMidi = Math.max(...midiValues);
 
-    let visiblePitchMidi = null;
-    if (currentPitch) {
-      const rawMidi = frequencyToMidi(currentPitch);
-      // 極端なノイズで画面全体が縮まないよう、曲の上下1オクターブまで表示。
-      visiblePitchMidi = Math.max(
-        songMinMidi - 12,
-        Math.min(songMaxMidi + 12, rawMidi)
-      );
-    }
-
-    const minMidi = Math.min(
-      songMinMidi - 3,
-      visiblePitchMidi == null ? Infinity : visiblePitchMidi - 1
-    );
-    const maxMidi = Math.max(
-      songMaxMidi + 3,
-      visiblePitchMidi == null ? -Infinity : visiblePitchMidi + 1
-    );
+    // 表示する音域は「曲の音域＋上下5半音」で固定します。
+    // 歌っている音に合わせて縦軸を広げたり縮めたりしないため、
+    // 音程バー全体が上下に揺れるような見え方を防げます。
+    const minMidi = songMinMidi - 5;
+    const maxMidi = songMaxMidi + 5;
     const top = 28;
     const bottom = h - 28;
     const past = 1.65;
@@ -1443,7 +1441,8 @@
 
     if (currentPitch) {
       const midi = frequencyToMidi(currentPitch);
-      const y = midiToY(midi, minMidi, maxMidi, top, bottom);
+      const visibleMidi = Math.max(minMidi, Math.min(maxMidi, midi));
+      const y = midiToY(visibleMidi, minMidi, maxMidi, top, bottom);
       const active = getActiveNote(elapsed);
       let dotColor = '#d96859';
       if (active?.midi != null) {
