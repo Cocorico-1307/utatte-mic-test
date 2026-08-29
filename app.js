@@ -25,8 +25,7 @@
   let lastCanvasHeight = 0;
   let latestClassRanking = [];
   const sessionScoreHistory = new Map();
-  const sessionBadgesByStudent = new Map();
-  const sessionAttemptsByStudent = new Map();
+  let latestStudentGrowth = null;
 
   // 通常の児童URLには出さない、先生専用の仮想テストクラス。
   const teacherTestMode =
@@ -45,10 +44,11 @@
     if (data.ok) {
       saveStatus.textContent = '✅ スプレッドシートに記録しました。';
       saveStatus.className = 'status success';
-      // 新しい記録が入ったので、少し待ってからランキングとクラスの木を更新。
+      // 新しい記録が入ったので、少し待ってからランキング・クラスの木・うたレベルを更新。
       setTimeout(() => {
         loadClassRanking();
         loadClassGarden();
+        loadStudentGrowth(true);
       }, 500);
     } else {
       saveStatus.textContent = '❌ 記録できませんでした：' + (data.message || '先生に確認してください。');
@@ -72,7 +72,7 @@
     document.getElementById('retryButton')?.addEventListener('click', startGame);
     document.getElementById('refreshRankingButton')?.addEventListener('click', loadClassRanking);
     document.getElementById('refreshGardenButton')?.addEventListener('click', loadClassGarden);
-    renderBadgeGallery();
+    document.getElementById('refreshStudentGrowthButton')?.addEventListener('click', () => loadStudentGrowth(false));
     applyTeacherTestMode();
 
     const guideVolume = document.getElementById('guideVolume');
@@ -287,6 +287,7 @@
       setStatus('スタートすると、はじめの音のあとにカウントが鳴ります。');
       loadClassRanking();
       loadClassGarden();
+      loadStudentGrowth(false);
     } else {
       latestClassRanking = [];
       renderClassRanking([]);
@@ -308,6 +309,7 @@
     // テスト時はクラス集計を表示しません。
     document.getElementById('classGardenCard')?.classList.add('hidden');
     document.getElementById('classRankingCard')?.classList.add('hidden');
+    document.getElementById('studentGrowthCard')?.classList.add('hidden');
   }
 
   function setupSchoolSelectors() {
@@ -334,7 +336,8 @@
         sessionStorage.setItem('singScoreAttendance', document.getElementById('attendanceNumber').value);
         // ランキングの中で「自分のクラス」の強調表示だけ更新します。
         renderClassRanking(latestClassRanking);
-        renderBadgeGallery();
+        latestStudentGrowth = null;
+        loadStudentGrowth(false);
         loadClassGarden();
       });
     });
@@ -813,7 +816,6 @@
     document.getElementById('judgedNotes').textContent = result.noteCount;
     document.getElementById('resultTip').textContent = getPracticeTip(result);
     updateSessionProgress(result);
-    awardSessionBadges(result);
 
     card.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
@@ -858,107 +860,76 @@
 
 
 
-  const BADGE_DEFINITIONS = [
-    { id: 'first', icon: '🌱', name: 'はじめの一歩', condition: '1回チャレンジ' },
-    { id: 'pitch80', icon: '🎯', name: '音程スター', condition: '音程80点以上' },
-    { id: 'rhythm85', icon: '🥁', name: 'リズムマスター', condition: 'リズム85点以上' },
-    { id: 'voice80', icon: '📣', name: 'いい声！', condition: '声量80点以上' },
-    { id: 'long80', icon: '🌬️', name: 'ロングトーン名人', condition: 'ロングトーン80点以上' },
-    { id: 'smooth80', icon: '🌊', name: 'なめらか名人', condition: 'なめらかさ80点以上' },
-    { id: 'attempt3', icon: '🔥', name: 'チャレンジャー', condition: 'このページで3回歌う' },
-    { id: 'rankA', icon: '⭐', name: 'Aランク！', condition: '総合80点以上' },
-    { id: 'rankS', icon: '👑', name: 'Sランク！', condition: '総合90点以上' },
-  ];
+  async function loadStudentGrowth(announceLevelUp = false) {
+    if (teacherTestMode) return;
 
-  function getCurrentStudentIdentityKey() {
-    const grade = document.getElementById('gradeSelect')?.value || '';
-    const classNumber = document.getElementById('classSelect')?.value || '';
-    const attendanceNumber = document.getElementById('attendanceNumber')?.value || '';
-    if (!grade || !classNumber || !attendanceNumber) return '';
-    return `${grade}|${classNumber}|${attendanceNumber}`;
-  }
+    const icon = document.getElementById('studentGrowthIcon');
+    const levelEl = document.getElementById('studentGrowthLevel');
+    const fill = document.getElementById('studentGrowthFill');
+    const next = document.getElementById('studentGrowthNext');
+    const banner = document.getElementById('levelUpBanner');
+    if (!icon || !levelEl || !fill || !next) return;
 
-  function getCurrentBadgeSet() {
-    const key = getCurrentStudentIdentityKey();
-    if (!key) return new Set();
-    if (!sessionBadgesByStudent.has(key)) {
-      sessionBadgesByStudent.set(key, new Set());
+    if (!apiUrl || !currentLessonCode) {
+      latestStudentGrowth = null;
+      icon.textContent = '🌱';
+      levelEl.textContent = 'うたレベル 1';
+      fill.style.width = '0%';
+      next.textContent = '教材を読み込むと、これまでの積み重ねが表示されます。';
+      if (banner) banner.classList.add('hidden');
+      return;
     }
-    return sessionBadgesByStudent.get(key);
-  }
 
-  function awardSessionBadges(result) {
-    const key = getCurrentStudentIdentityKey();
-    if (!key) return;
+    const grade = Number(document.getElementById('gradeSelect')?.value || 0);
+    const classNumber = Number(document.getElementById('classSelect')?.value || 0);
+    const attendanceNumber = Number(document.getElementById('attendanceNumber')?.value || 0);
+    if (!grade || !classNumber || !attendanceNumber) return;
 
-    const attempts = (sessionAttemptsByStudent.get(key) || 0) + 1;
-    sessionAttemptsByStudent.set(key, attempts);
+    next.textContent = 'うたレベルを読み込んでいます…';
 
-    const badges = getCurrentBadgeSet();
-    const newlyUnlocked = [];
+    try {
+      const previousLevel = latestStudentGrowth ? Number(latestStudentGrowth.level || 1) : null;
+      const data = await jsonp({
+        action: 'studentGrowth',
+        lessonCode: currentLessonCode,
+        grade,
+        classNumber,
+        attendanceNumber,
+      });
 
-    const unlock = (id, ok) => {
-      if (!ok || badges.has(id)) return;
-      badges.add(id);
-      newlyUnlocked.push(id);
-    };
+      if (!data?.ok || !data.growth) {
+        throw new Error(data?.message || 'うたレベルを読み込めませんでした。');
+      }
 
-    unlock('first', true);
-    unlock('pitch80', Number(result.pitchScore || 0) >= 80);
-    unlock('rhythm85', Number(result.rhythmScore || 0) >= 85);
-    unlock('voice80', Number(result.singingScore || 0) >= 80);
-    unlock('long80', Number(result.longToneScore || 0) >= 80);
-    unlock('smooth80', Number(result.stabilityScore || 0) >= 80);
-    unlock('attempt3', attempts >= 3);
-    unlock('rankA', Number(result.totalScore || 0) >= 80);
-    unlock('rankS', Number(result.totalScore || 0) >= 90);
+      const growth = data.growth;
+      latestStudentGrowth = growth;
 
-    renderBadgeGallery(newlyUnlocked);
+      const level = Math.max(1, Number(growth.level || 1));
+      const progressPercent = Math.max(0, Math.min(100, Number(growth.progressPercent || 0)));
+      const pointsToNext = Math.max(1, Number(growth.pointsToNext || 1));
 
-    const banner = document.getElementById('newBadgeBanner');
-    if (!banner) return;
+      icon.textContent = growth.stageIcon || '🌱';
+      levelEl.textContent = `うたレベル ${level}　${growth.stageLabel || ''}`.trim();
+      fill.style.width = `${progressPercent}%`;
+      next.textContent = `80点以上のチャレンジを、あと${pointsToNext}回積み重ねるとレベル${level + 1}！`;
 
-    if (newlyUnlocked.length) {
-      const names = BADGE_DEFINITIONS
-        .filter(b => newlyUnlocked.includes(b.id))
-        .map(b => `${b.icon} ${b.name}`);
-      banner.textContent = `🎉 NEW BADGE！ ${names.join('・')}`;
-      banner.classList.remove('hidden');
-    } else {
-      banner.classList.add('hidden');
-      banner.textContent = '';
+      if (banner) {
+        if (announceLevelUp && previousLevel != null && level > previousLevel) {
+          banner.textContent = `🎉 レベルアップ！ うたレベル ${level} になりました！`;
+          banner.classList.remove('hidden');
+        } else {
+          banner.classList.add('hidden');
+          banner.textContent = '';
+        }
+      }
+    } catch (err) {
+      latestStudentGrowth = null;
+      icon.textContent = '🌱';
+      levelEl.textContent = 'うたレベル';
+      fill.style.width = '0%';
+      next.textContent = err?.message || 'うたレベルを読み込めませんでした。';
+      if (banner) banner.classList.add('hidden');
     }
-  }
-
-  function renderBadgeGallery(newlyUnlocked = []) {
-    const gallery = document.getElementById('badgeGallery');
-    if (!gallery) return;
-
-    const badges = getCurrentBadgeSet();
-    gallery.innerHTML = '';
-
-    BADGE_DEFINITIONS.forEach(def => {
-      const unlocked = badges.has(def.id);
-      const item = document.createElement('div');
-      item.className =
-        `badge-item ${unlocked ? 'unlocked' : 'locked'} ` +
-        `${newlyUnlocked.includes(def.id) ? 'just-unlocked' : ''}`;
-
-      const icon = document.createElement('div');
-      icon.className = 'badge-icon';
-      icon.textContent = unlocked ? def.icon : '🔒';
-
-      const name = document.createElement('div');
-      name.className = 'badge-name';
-      name.textContent = def.name;
-
-      const condition = document.createElement('div');
-      condition.className = 'badge-condition';
-      condition.textContent = unlocked ? 'ゲット！' : def.condition;
-
-      item.append(icon, name, condition);
-      gallery.appendChild(item);
-    });
   }
 
   async function loadClassGarden() {
