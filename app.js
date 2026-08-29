@@ -624,19 +624,22 @@
     stat.centsSquareSum += signedCents * signedCents;
     stat.pitchSampleCount++;
 
-    // 前よりやさしめ。半音弱くらいまで「よく合っている」扱い。
-    if (cents <= 80) stat.excellentSamples++;
+    // 小学生の歌声では、音の入りや自然な揺れで少しずれることがあるため、
+    // 1半音程度のずれまでは「ぴったり音符」として数えやすくします。
+    if (cents <= 100) stat.excellentSamples++;
   }
 
   function pitchQuality(cents) {
-    // 子どもの歌声・自然なしゃくり・ビブラートを考慮して、
-    // 以前より広めの許容幅にしています。
-    if (cents <= 50) return 1.00;
-    if (cents <= 100) return 0.96;
-    if (cents <= 150) return 0.88;
-    if (cents <= 220) return 0.72;
-    if (cents <= 300) return 0.50;
-    if (cents <= 420) return 0.25;
+    // 音程判定は少し甘め。
+    // 自然なしゃくり・ビブラート・声変わり前後の揺れを大きく減点しない設定です。
+    // ただし、明らかに別の音程を歌った場合まで高得点にはしません。
+    if (cents <= 70) return 1.00;
+    if (cents <= 120) return 0.98;
+    if (cents <= 180) return 0.92;
+    if (cents <= 250) return 0.80;
+    if (cents <= 330) return 0.60;
+    if (cents <= 450) return 0.32;
+    if (cents <= 550) return 0.12;
     return 0;
   }
 
@@ -1490,7 +1493,7 @@
       let dotColor = '#d96859';
       if (active?.midi != null) {
         const cents = Math.abs((midi - active.midi) * 100);
-        dotColor = cents <= 80 ? '#86ad6c' : cents <= 160 ? '#efbd4f' : '#d96859';
+        dotColor = cents <= 100 ? '#86ad6c' : cents <= 190 ? '#efbd4f' : '#d96859';
       }
       ctx.fillStyle = dotColor;
       ctx.beginPath(); ctx.arc(playX, y, 10, 0, Math.PI * 2); ctx.fill();
@@ -1516,9 +1519,9 @@
     if (active?.midi != null && currentPitch) {
       const cents = Math.abs(1200 * Math.log2(currentPitch / midiToFrequency(active.midi)));
       document.getElementById('livePitchScore').textContent =
-        cents <= 70 ? 'ぴったり' :
-        cents <= 150 ? 'いい感じ' :
-        cents <= 240 ? 'もう少し' : 'ちがうよ';
+        cents <= 100 ? 'ぴったり' :
+        cents <= 190 ? 'いい感じ' :
+        cents <= 290 ? 'もう少し' : 'ちがうよ';
     } else {
       document.getElementById('livePitchScore').textContent = '―';
     }
