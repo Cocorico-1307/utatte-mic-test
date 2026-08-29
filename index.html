@@ -88,7 +88,23 @@
       letter-spacing: .045em;
     }
 
-    header h1::before { content: none; }
+    header h1::before {
+      content: "♪";
+      display: inline-grid;
+      place-items: center;
+      width: .95em;
+      height: .95em;
+      margin-right: .28em;
+      border-radius: 50%;
+      color: #fffdf7;
+      background: var(--gold);
+      box-shadow: 0 4px 10px rgba(191, 127, 29, .18);
+      font-size: .58em;
+      font-weight: 950;
+      line-height: 1;
+      vertical-align: .15em;
+      transform: rotate(-7deg);
+    }
 
     header p {
       position: relative;
@@ -171,6 +187,13 @@
       border-color: var(--gold);
       background: white;
       box-shadow: 0 0 0 4px rgba(227, 166, 47, .14);
+    }
+
+    #lessonCode {
+      font-size: 20px;
+      font-weight: 900;
+      letter-spacing: .22em;
+      font-variant-numeric: tabular-nums;
     }
 
     button {
@@ -534,7 +557,7 @@
   <section id="entryCard" class="card">
     <div class="grid two">
       <label>利用コード
-        <input id="lessonCode" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" placeholder="8桁の数字">
+        <input id="lessonCode" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="4桁の数字">
       </label>
       <div style="align-self:end">
         <div class="actions">
